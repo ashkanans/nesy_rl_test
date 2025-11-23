@@ -1,0 +1,9 @@
+[submodule "suffix-prediction"]
+	path = suffix-prediction
+	url = https://github.com/axelmezini/suffix-prediction
+[submodule "nesy-suffix-prediction-dfa"]
+	path = nesy-suffix-prediction-dfa
+	url = https://github.com/axelmezini/nesy-suffix-prediction-dfa
+[submodule "trajectory-transformer"]
+	path = trajectory-transformer
+	url = https://github.com/jannerm/trajectory-transformer
