@@ -76,20 +76,20 @@ class CBSequenceDataset(Dataset):
             end_row = np.array([end_token] * 4, dtype=np.int64)
             tokens = np.vstack([tokens, end_row])
 
-            flat = tokens.reshape(-1)
-            episodes_tokens.append(flat)
+            episodes_tokens.append(tokens)
 
         indices = []
-        for ep_idx, flat in enumerate(episodes_tokens):
-            L = flat.shape[0]
-            if L < sequence_length + 1:
+        for ep_idx, rows in enumerate(episodes_tokens):
+            R = rows.shape[0]
+            rows_per_seg = max(1, min(sequence_length // 4, R - 1))
+            if R < rows_per_seg + 1:
                 continue
-            starts = list(range(0, max(1, L - sequence_length), sequence_length))
-            last_start = L - (sequence_length + 1)
-            if last_start not in starts:
-                starts.append(last_start)
-            for start in starts:
-                indices.append((ep_idx, start))
+            starts = list(range(0, max(1, R - (rows_per_seg + 1)), rows_per_seg))
+            tail = R - (rows_per_seg + 1)
+            if tail not in starts:
+                starts.append(tail)
+            for start_row in starts:
+                indices.append((ep_idx, start_row))
 
         self.episodes_tokens = episodes_tokens
         self.indices = indices
@@ -103,9 +103,11 @@ class CBSequenceDataset(Dataset):
 
     def __getitem__(self, idx):
         ep_idx, start = self.indices[idx]
-        flat = self.episodes_tokens[ep_idx]
-        seg = flat[start:start + self.sequence_length + 1]
-        x = torch.from_numpy(seg[:-1].astype(np.int64))
-        y = torch.from_numpy(seg[1:].astype(np.int64))
+        rows = self.episodes_tokens[ep_idx]
+        rows_per_seg = max(1, min(self.sequence_length // 4, rows.shape[0] - 1))
+        seg_rows = rows[start:start + rows_per_seg + 1]
+        flat = seg_rows.reshape(-1)
+        x = torch.from_numpy(flat[:-4].astype(np.int64))
+        y = torch.from_numpy(flat[4:].astype(np.int64))
         mask = torch.ones_like(x, dtype=torch.float32)
         return x, y, mask

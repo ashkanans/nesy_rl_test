@@ -27,8 +27,12 @@ def test_datasets():
     x2, y2, mask2 = nav_ds[0]
     assert x.shape == y.shape == mask.shape
     assert x2.shape == y2.shape == mask2.shape
-    assert (y[:-1] == x[1:]).all()
-    assert (y2[:-1] == x2[1:]).all()
+    xr = x.view(-1, 4)
+    yr = y.view(-1, 4)
+    assert (yr[:-1] == xr[1:]).all()
+    xr2 = x2.view(-1, 4)
+    yr2 = y2.view(-1, 4)
+    assert (yr2[:-1] == xr2[1:]).all()
     return {
         "cb_len": len(cb_ds),
         "nav_len": len(nav_ds),
