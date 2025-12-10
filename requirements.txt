@@ -45,7 +45,7 @@ pythomata==0.3.2
 setuptools==80.9.0
 sympy==1.14.0
 torch==2.3.1+cu118
--e git+ssh://git@github.com/matteomancanelli/nesy_rl.git@0d22db9f2a38f8cd280317c97af4dacc4e12fc79#egg=trajectory&subdirectory=trajectory-transformer
+-e ./trajectory-transformer
 triton==3.5.1
 typed-argument-parser==1.11.0
 typing-inspect==0.9.0
