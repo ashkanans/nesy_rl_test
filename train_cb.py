@@ -88,7 +88,7 @@ def build_model(args, dataset, vocab_size):
     return model
 
 
-def train(args):
+def train(args, return_state=False):
     dataset = CBSequenceDataset(
         num_episodes=args.num_episodes, max_steps=args.max_steps,
         sequence_length=args.block_size, discount=args.discount,
@@ -169,9 +169,40 @@ def train(args):
                 ckpt_path,
             )
 
+    if return_state:
+        return model, adapter, deep_dfa, dataset
 
-def parse_args():
-    p = argparse.ArgumentParser()
+
+def evaluate_model(model, adapter, dfa, dataset, batch_size=64):
+    """
+    Simple evaluation: supervised loss and DFA satisfaction rate on a dataset.
+    """
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False)
+    model.eval()
+    total_loss = 0.0
+    total_batches = 0
+    total_sat = 0.0
+    total_tokens = 0
+
+    with torch.no_grad():
+        for batch in loader:
+            x, y, mask = [b.to(device) for b in batch]
+            logits, sup_loss = model(x, targets=y, mask=mask)
+            preds = logits.argmax(dim=-1)
+            sat = adapter.batch_check_dfa_sat(preds, dfa)
+
+            total_loss += sup_loss.item()
+            total_batches += 1
+            total_sat += sat.sum().item()
+            total_tokens += sat.numel()
+
+    avg_loss = total_loss / max(1, total_batches)
+    sat_rate = total_sat / max(1, total_tokens)
+    return {"supervised_loss": avg_loss, "satisfaction_rate": sat_rate}
+
+
+def get_arg_parser(add_help=True):
+    p = argparse.ArgumentParser(add_help=add_help)
 
     p.add_argument("--num_episodes", type=int, default=2000)
     p.add_argument("--max_steps", type=int, default=200)
@@ -205,7 +236,11 @@ def parse_args():
 
     p.add_argument("--save_path", type=str, default="cb_runs")
 
-    return p.parse_args()
+    return p
+
+
+def parse_args():
+    return get_arg_parser().parse_args()
 
 
 if __name__ == "__main__":
