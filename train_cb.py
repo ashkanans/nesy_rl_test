@@ -2,6 +2,7 @@ import argparse
 import os
 from pathlib import Path
 import sys
+from collections import deque
 import torch
 from torch.utils.data import DataLoader
 
@@ -14,11 +15,59 @@ from dfa_adapter import TTDFAAdapter
 from logic_loss_tt import LogicLossModule
 from cb_dataset import CBSequenceDataset
 from DeepAutoma import DeepDFA
+from FiniteStateMachine import DFA
 
 if torch.cuda.is_available():
     device = 'cuda:0'
 else:
     device = 'cpu'
+
+
+def build_product_dfa(dfas):
+    """
+    Build a product DFA that accepts only if all component DFAs accept.
+    Assumes all DFAs share the same dictionary_symbols and num_of_symbols.
+    """
+    if not dfas:
+        raise ValueError("No DFAs provided for product construction")
+
+    dict_syms = dfas[0].dictionary_symbols
+    num_syms = len(dict_syms)
+    for d in dfas[1:]:
+        if d.dictionary_symbols != dict_syms:
+            raise ValueError("All DFAs must share the same dictionary_symbols for product")
+
+    init_state = tuple(0 for _ in dfas)
+    state_to_idx = {init_state: 0}
+    transitions = {}
+    acceptance = []
+    queue = deque([init_state])
+
+    def is_accept(state_tuple):
+        return all(dfas[i].acceptance[s] for i, s in enumerate(state_tuple))
+
+    while queue:
+        state_tuple = queue.popleft()
+        s_idx = state_to_idx[state_tuple]
+        transitions[s_idx] = {}
+
+        # acceptance list is indexed by s_idx
+        if len(acceptance) <= s_idx:
+            acceptance.append(is_accept(state_tuple))
+
+        for sym in range(num_syms):
+            next_tuple = []
+            for i, d in enumerate(dfas):
+                next_state = d.transitions[state_tuple[i]].get(sym, state_tuple[i])
+                next_tuple.append(next_state)
+            next_tuple = tuple(next_tuple)
+            if next_tuple not in state_to_idx:
+                state_to_idx[next_tuple] = len(state_to_idx)
+                queue.append(next_tuple)
+            transitions[s_idx][sym] = state_to_idx[next_tuple]
+
+    product_dfa = DFA(transitions, acceptance, None, dictionary_symbols=dict_syms)
+    return product_dfa
 
 
 def build_adapter_and_dfa(args, dataset):
@@ -52,13 +101,32 @@ def build_adapter_and_dfa(args, dataset):
         use_stop_token=True,
     )
 
-    if args.ltl_formula is None:
-        raise ValueError("You must provide --ltl_formula")
+    formulas = []
+    if args.ltl_formulas is not None:
+        formulas = args.ltl_formulas
+    elif args.ltl_formula is not None:
+        formulas = [args.ltl_formula]
+    else:
+        raise ValueError("You must provide --ltl_formula or --ltl_formulas")
 
-    dfa = adapter.create_dfa_from_ltl(args.ltl_formula, "cb_constraint")
-    # FiniteStateMachine.DFA exposes return_deep_dfa as an instance method
-    deep_dfa = dfa.return_deep_dfa()
-    return adapter, deep_dfa, dfa
+    dfas = [
+        adapter.create_dfa_from_ltl(f, f"cb_constraint_{i}") for i, f in enumerate(formulas)
+    ]
+
+    if len(dfas) == 1 or args.dfa_mode == "single":
+        dfa = dfas[0]
+        deep_dfa = dfa.return_deep_dfa()
+        raw_dfa = dfa
+    elif args.dfa_mode == "product":
+        raw_dfa = build_product_dfa(dfas)
+        deep_dfa = raw_dfa.return_deep_dfa()
+    elif args.dfa_mode == "multi":
+        deep_dfa = [d.return_deep_dfa() for d in dfas]
+        raw_dfa = dfas
+    else:
+        raise ValueError(f"Unknown dfa_mode {args.dfa_mode}")
+
+    return adapter, deep_dfa, raw_dfa
 
 
 def build_model(args, dataset, vocab_size):
@@ -189,7 +257,11 @@ def evaluate_model(model, adapter, dfa, dataset, batch_size=64):
             x, y, mask = [b.to(device) for b in batch]
             logits, sup_loss = model(x, targets=y, mask=mask)
             preds = logits.argmax(dim=-1)
-            sat = adapter.batch_check_dfa_sat(preds, dfa)
+            if isinstance(dfa, (list, tuple)):
+                sats = [adapter.batch_check_dfa_sat(preds, d) for d in dfa]
+                sat = torch.stack(sats, dim=0).min(dim=0).values
+            else:
+                sat = adapter.batch_check_dfa_sat(preds, dfa)
 
             total_loss += sup_loss.item()
             total_batches += 1
@@ -227,7 +299,10 @@ def get_arg_parser(add_help=True):
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--grad_clip", type=float, default=1.0)
 
-    p.add_argument("--ltl_formula", type=str, required=True)
+    p.add_argument("--ltl_formula", type=str, default=None)
+    p.add_argument("--ltl_formulas", type=str, nargs="+", default=None, help="List of LTL formulas")
+    p.add_argument("--dfa_mode", type=str, choices=["single", "product", "multi"], default="product",
+                   help="How to combine multiple formulas: single (first only), product DFA, or multi (separate DFAs with averaged loss)")
     p.add_argument("--constraint_dims", type=int, nargs="+", default=[0])
 
     p.add_argument("--num_samples", type=int, default=10)

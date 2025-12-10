@@ -50,8 +50,8 @@ class LogicLossModule:
 
         Args:
             deep_dfa:
-                DeepDFA instance used to compute acceptance probabilities for
-                soft symbol sequences.
+                DeepDFA instance or list of DeepDFAs used to compute acceptance
+                probabilities for soft symbol sequences.
             adapter:
                 TTDFAAdapter (or compatible) that maps token probabilities to
                 symbol probabilities for the DFA.
@@ -67,7 +67,10 @@ class LogicLossModule:
                 mixing coefficient in [0, 1] between supervised and logic loss.
         """
 
-        self.deep_dfa = deep_dfa.to(device)
+        if isinstance(deep_dfa, (list, tuple)):
+            self.deep_dfa = [d.to(device) for d in deep_dfa]
+        else:
+            self.deep_dfa = deep_dfa.to(device)
         self.adapter = adapter
         self.mode = mode
         self.num_samples = num_samples
@@ -224,10 +227,33 @@ class LogicLossModule:
         """
 
         if self.mode == "global":
-            return self.global_logic_loss_tt(
-                model, batch, self.deep_dfa, self.adapter, num_samples=self.num_samples,
-                temperature=self.temperature, alpha=self.alpha, return_components=return_components
-            )
+            if isinstance(self.deep_dfa, list):
+                # compute logic loss for each constraint and average
+                total_losses = []
+                sup_losses = []
+                logic_losses = []
+                for dfa_inst in self.deep_dfa:
+                    tl, sl, ll = self.global_logic_loss_tt(
+                        model, batch, dfa_inst, self.adapter,
+                        num_samples=self.num_samples,
+                        temperature=self.temperature,
+                        alpha=self.alpha,
+                        return_components=True,
+                    )
+                    total_losses.append(tl)
+                    sup_losses.append(sl)
+                    logic_losses.append(ll)
+                total_loss = torch.stack(total_losses).mean()
+                sup_loss = torch.stack(sup_losses).mean()
+                logic_loss = torch.stack(logic_losses).mean()
+                if return_components:
+                    return total_loss, sup_loss, logic_loss
+                return total_loss
+            else:
+                return self.global_logic_loss_tt(
+                    model, batch, self.deep_dfa, self.adapter, num_samples=self.num_samples,
+                    temperature=self.temperature, alpha=self.alpha, return_components=return_components
+                )
         elif self.mode == "local":
             return self.local_logic_loss_tt()
         else:
