@@ -2,6 +2,8 @@ import os
 import random
 import re
 import torch
+import contextlib
+import io
 from graphviz import Source
 from pythomata import SimpleDFA
 from pythomata import SymbolicAutomaton
@@ -90,9 +92,18 @@ class DFA:
         if dictionary_symbols == None:
             self.dictionary_symbols = list(range(self.num_of_symbols))
         else:
-            self.dictionary_symbols = dictionary_symbols
+            # make sure "end" (stop token) is the last symbol for downstream logic
+            seen = []
+            for sym in dictionary_symbols:
+                if sym == "end":
+                    continue
+                if sym not in seen:
+                    seen.append(sym)
+            if "end" in dictionary_symbols:
+                seen.append("end")
+            self.dictionary_symbols = seen
         if isinstance(arg1, str):
-            self.init_from_ltl(arg1, arg2, arg3, dictionary_symbols)
+            self.init_from_ltl(arg1, arg2, arg3, self.dictionary_symbols)
         elif isinstance(arg1, int):
             self.random_init(arg1, arg2)
         elif isinstance(arg1, dict):
@@ -113,8 +124,9 @@ class DFA:
         #   print(f'formula: {ltl_formula}')
 
         parser = LTLfParser()
-        ast = parser(ltl_formula)
-        dot = ast.to_dfa()
+        with io.StringIO() as buf_out, io.StringIO() as buf_err, contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+            ast = parser(ltl_formula)
+            dot = ast.to_dfa()
         #   # print the automaton
 
         # Make sure the directory exists
