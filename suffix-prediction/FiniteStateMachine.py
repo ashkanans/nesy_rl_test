@@ -240,6 +240,13 @@ class DFA:
                     if label.subs(at):
                         red_trans_funct[s0][sym] = key
 
+        # Complete missing transitions by self-looping, so unseen symbols don't force rejection
+        num_syms = len(self.alphabet)
+        for s0 in red_trans_funct:
+            for sym in range(num_syms):
+                if sym not in red_trans_funct[s0]:
+                    red_trans_funct[s0][sym] = s0
+
         return red_trans_funct
 
     def calculate_non_failure_states(self):
