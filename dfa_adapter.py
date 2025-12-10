@@ -281,15 +281,46 @@ class TTDFAAdapter:
 
         return sym_probs
 
-    def create_dfa_from_ltl(self, ltl_formula, formula_name="constraint"):
+    def create_dfa_from_ltl(self, ltl_formula, formula_name="constraint", use_safe_dfa=False):
         """
         Build a DFA from an LTL formula using the current symbolic vocabulary.
         """
+
+        if use_safe_dfa and ltl_formula.startswith("G("):
+            return self._build_safe_dfa_from_unsafe_set(ltl_formula, formula_name)
 
         # FiniteStateMachine.DFA signature is (ltl_formula, num_symbols, name, dictionary_symbols)
         dfa = DFA(ltl_formula, self.num_symbols, formula_name, dictionary_symbols=self.symbolic_vocab)
 
         return dfa
+
+    def _parse_unsafe_symbols(self, ltl_formula):
+        """
+        Extract symbols that appear in a simple safety formula G(!(a | b | ...)).
+        """
+        unsafe = []
+        for sym in self.symbolic_vocab:
+            if sym in ltl_formula:
+                unsafe.append(sym)
+        return unsafe
+
+    def _build_safe_dfa_from_unsafe_set(self, ltl_formula, formula_name):
+        """
+        Build a DFA that stays in accept unless an unsafe symbol is seen.
+        Assumes formula is of the form G(!(unsafe1 | unsafe2 | ...)).
+        """
+        unsafe_syms = set(self._parse_unsafe_symbols(ltl_formula))
+        num_syms = len(self.symbolic_vocab)
+        transitions = {0: {}, 1: {}}
+        for idx, sym in enumerate(self.symbolic_vocab):
+            if sym in unsafe_syms:
+                transitions[0][idx] = 1
+                transitions[1][idx] = 1
+            else:
+                transitions[0][idx] = 0
+                transitions[1][idx] = 1
+        acceptance = [True, False]
+        return DFA(transitions, acceptance, None, dictionary_symbols=self.symbolic_vocab)
 
     def _symbols_to_dfa_indices(self, symbol_seq, dfa):
         """

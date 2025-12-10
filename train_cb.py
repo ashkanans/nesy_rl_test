@@ -111,7 +111,7 @@ def build_adapter_and_dfa(args, dataset):
         raise ValueError("You must provide --ltl_formula or --ltl_formulas")
 
     dfas = [
-        adapter.create_dfa_from_ltl(f, f"cb_constraint_{i}") for i, f in enumerate(formulas)
+        adapter.create_dfa_from_ltl(f, f"cb_constraint_{i}", use_safe_dfa=args.use_safe_dfa) for i, f in enumerate(formulas)
     ]
 
     if len(dfas) == 1 or args.dfa_mode == "single":
@@ -319,6 +319,7 @@ def get_arg_parser(add_help=True):
     p.add_argument("--ltl_formulas", type=str, nargs="+", default=None, help="List of LTL formulas")
     p.add_argument("--dfa_mode", type=str, choices=["single", "product", "multi"], default="product",
                    help="How to combine multiple formulas: single (first only), product DFA, or multi (separate DFAs with averaged loss)")
+    p.add_argument("--use_safe_dfa", action="store_true", help="Build simple safety DFA for G(!unsafe) formulas")
     p.add_argument("--constraint_dims", type=int, nargs="+", default=[0])
 
     p.add_argument("--num_samples", type=int, default=10)
