@@ -333,6 +333,9 @@ class TTDFAAdapter:
         satisfaction = torch.zeros(batch_size, dtype=torch.float32, device=device)
 
         symbol_sequences = self.tokens_to_symbols(token_sequences)
+        if isinstance(symbol_sequences, list) and symbol_sequences and isinstance(symbol_sequences[0], str):
+            # single sequence case: wrap in list
+            symbol_sequences = [symbol_sequences]
 
         for i, symbol_seq in enumerate(symbol_sequences):
             indices = self._symbols_to_dfa_indices(symbol_seq, dfa)
