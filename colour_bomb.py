@@ -100,7 +100,7 @@ class ColourBombGridworldV1Env(gym.Env):
 
     def reset(self, seed=None, options=None):
         if seed is not None:
-            self.seed(seed)
+            np.random.seed(seed)
         self._cur_pos = self.start_pos
         self._steps = 0
         obs = self._pos_to_state(self._cur_pos)
