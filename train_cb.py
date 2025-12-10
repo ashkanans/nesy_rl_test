@@ -58,7 +58,7 @@ def build_adapter_and_dfa(args, dataset):
     dfa = adapter.create_dfa_from_ltl(args.ltl_formula, "cb_constraint")
     # FiniteStateMachine.DFA exposes return_deep_dfa as an instance method
     deep_dfa = dfa.return_deep_dfa()
-    return adapter, deep_dfa
+    return adapter, deep_dfa, dfa
 
 
 def build_model(args, dataset, vocab_size):
@@ -99,7 +99,7 @@ def train(args, return_state=False):
         dataset, batch_size=args.batch_size, shuffle=True, drop_last=True
     )
 
-    adapter, deep_dfa = build_adapter_and_dfa(args, dataset)
+    adapter, deep_dfa, raw_dfa = build_adapter_and_dfa(args, dataset)
     # GPT expects vocab_size without the extra stop token it appends internally
     model = build_model(args, dataset, vocab_size=adapter.num_token_ids - 1)
 
@@ -170,7 +170,7 @@ def train(args, return_state=False):
             )
 
     if return_state:
-        return model, adapter, deep_dfa, dataset
+        return model, adapter, deep_dfa, dataset, raw_dfa
 
 
 def evaluate_model(model, adapter, dfa, dataset, batch_size=64):

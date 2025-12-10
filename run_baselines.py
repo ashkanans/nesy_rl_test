@@ -26,13 +26,11 @@ def run_baseline(name, args):
     cfg.save_path = os.path.join(args.base_save_path, name)
 
     # Train and keep the objects for evaluation
-    model, adapter, dfa, dataset = train(cfg, return_state=True)
+    model, adapter, deep_dfa, dataset, raw_dfa = train(cfg, return_state=True)
 
     metrics = {}
     if args.evaluate:
-        metrics = evaluate_model(
-            model, adapter, dfa, dataset, batch_size=args.eval_batch_size
-        )
+        metrics = evaluate_model(model, adapter, raw_dfa, dataset, batch_size=args.eval_batch_size)
         os.makedirs(cfg.save_path, exist_ok=True)
         metrics_path = os.path.join(cfg.save_path, "metrics.json")
         with open(metrics_path, "w") as f:
