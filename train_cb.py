@@ -14,6 +14,7 @@ from trajectory.models.transformers import GPT
 from dfa_adapter import TTDFAAdapter
 from logic_loss_tt import LogicLossModule
 from cb_dataset import CBSequenceDataset
+from nrm_nav_dataset import NRMSafetySequenceDataset
 from DeepAutoma import DeepDFA
 from FiniteStateMachine import DFA
 
@@ -156,12 +157,26 @@ def build_model(args, dataset, vocab_size):
     return model
 
 
+def build_dataset(args):
+    if args.env == "cb":
+        return CBSequenceDataset(
+            num_episodes=args.num_episodes, max_steps=args.max_steps,
+            sequence_length=args.block_size, discount=args.discount,
+            stochastic=args.stochastic, seed=args.seed
+        )
+    elif args.env == "nrm_nav":
+        return NRMSafetySequenceDataset(
+            num_episodes=args.num_episodes, max_steps=args.max_steps,
+            sequence_length=args.block_size, discount=args.discount,
+            stochastic=args.stochastic, seed=args.seed,
+            grid=None,
+        )
+    else:
+        raise ValueError(f"Unknown env {args.env}")
+
+
 def train(args, return_state=False):
-    dataset = CBSequenceDataset(
-        num_episodes=args.num_episodes, max_steps=args.max_steps,
-        sequence_length=args.block_size, discount=args.discount,
-        stochastic=args.stochastic, seed=args.seed
-    )
+    dataset = build_dataset(args)
 
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=True, drop_last=True
@@ -282,6 +297,7 @@ def get_arg_parser(add_help=True):
     p.add_argument("--discount", type=float, default=0.99)
     p.add_argument("--stochastic", action="store_true")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--env", type=str, choices=["cb", "nrm_nav"], default="cb")
 
     p.add_argument("--n_layer", type=int, default=4)
     p.add_argument("--n_head", type=int, default=4)
