@@ -3,9 +3,11 @@ import os
 from pathlib import Path
 import sys
 from collections import deque
+import json
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+import matplotlib.pyplot as plt
 
 REPO_ROOT = Path(__file__).parent
 sys.path.insert(0, str(REPO_ROOT / "trajectory-transformer"))
@@ -214,6 +216,11 @@ def build_dataset(args):
 def train(args, return_state=False):
     dataset = build_dataset(args)
 
+    # Optional: replay a single dataset episode and exit.
+    if getattr(args, "replay_dataset_episode", False):
+        replay_dataset_episode(args, dataset)
+        sys.exit(0)
+
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=True, drop_last=True
     )
@@ -223,6 +230,11 @@ def train(args, return_state=False):
     # If requested, only inspect DFA sizes and exit before training.
     if getattr(args, "inspect_dfa_only", False):
         print("inspect_dfa_only flag set; skipping training and evaluation.")
+        sys.exit(0)
+
+    # Optional: analyze dataset in depth (including constraint satisfaction) and exit.
+    if getattr(args, "analyze_dataset_only", False):
+        analyze_dataset(args, dataset, adapter, raw_dfa)
         sys.exit(0)
     # GPT expects vocab_size without the extra stop token it appends internally
     model = build_model(args, dataset, vocab_size=adapter.num_token_ids - 1)
@@ -537,6 +549,193 @@ def rollout_nrm_nav_policy(
     return rollout_metrics
 
 
+def analyze_dataset(args, dataset, adapter, raw_dfa):
+    """
+    Analyze the offline dataset in depth and save statistics and plots.
+
+    Works for both cb and nrm_nav. If LTL constraints are provided, also
+    reports satisfaction rates under the corresponding DFA(s).
+    """
+
+    save_root = args.save_path or f"{args.env}_dataset_analysis"
+    os.makedirs(save_root, exist_ok=True)
+    out_dir = os.path.join(save_root, "dataset_analysis")
+    os.makedirs(out_dir, exist_ok=True)
+
+    summary = {}
+    summary["env"] = args.env
+    summary["num_segments"] = len(dataset)
+
+    # episodes_tokens is a list of per-episode token arrays (including end row)
+    episodes = getattr(dataset, "episodes_tokens", [])
+    summary["num_episodes"] = len(episodes)
+
+    if episodes:
+        ep_lengths = [int(ep.shape[0] - 1) for ep in episodes]  # minus end row
+        summary["episode_length_min"] = int(np.min(ep_lengths))
+        summary["episode_length_max"] = int(np.max(ep_lengths))
+        summary["episode_length_mean"] = float(np.mean(ep_lengths))
+
+        # Episode length histogram
+        plt.figure(figsize=(6, 4))
+        plt.hist(ep_lengths, bins=20)
+        plt.xlabel("Episode length (transitions)")
+        plt.ylabel("Count")
+        plt.title(f"{args.env} episode length distribution")
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir, "episode_length_hist.png"))
+        plt.close()
+
+        # State ID histogram (from episodes, ignoring end row)
+        state_ids = []
+        for ep in episodes:
+            state_ids.extend(ep[:-1, 0].tolist())
+        plt.figure(figsize=(6, 4))
+        plt.hist(state_ids, bins=dataset.env.observation_space.n)
+        plt.xlabel("State ID")
+        plt.ylabel("Count")
+        plt.title(f"{args.env} state visitation histogram")
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir, "state_hist.png"))
+        plt.close()
+
+        if args.env == "nrm_nav":
+            # Cost histogram for nrm_nav (last column)
+            costs = []
+            for ep in episodes:
+                costs.extend(ep[:-1, 3].tolist())
+            plt.figure(figsize=(4, 4))
+            plt.hist(costs, bins=[-0.5, 0.5, 1.5])
+            plt.xticks([0, 1])
+            plt.xlabel("Cost")
+            plt.ylabel("Count")
+            plt.title("Cost distribution")
+            plt.tight_layout()
+            plt.savefig(os.path.join(out_dir, "cost_hist.png"))
+            plt.close()
+
+    # Position-wise token stats on a subset of segments
+    sample_limit = min(len(dataset), 500)
+    pos_stats = {}
+    for i in range(sample_limit):
+        x, _, _ = dataset[i]
+        x_np = x.numpy()
+        for pos in range(dataset.joined_dim):
+            vals = x_np[pos :: dataset.joined_dim]
+            st = pos_stats.setdefault(
+                pos, {"min": float("inf"), "max": float("-inf"), "values": []}
+            )
+            st["min"] = min(st["min"], float(vals.min()))
+            st["max"] = max(st["max"], float(vals.max()))
+            st["values"].extend(vals.tolist())
+
+    for pos, st in pos_stats.items():
+        vals = np.array(st["values"])
+        st["mean"] = float(vals.mean()) if vals.size else None
+        st["std"] = float(vals.std()) if vals.size else None
+        st["unique_count"] = int(len(np.unique(vals))) if vals.size else 0
+        # drop raw values to keep JSON small
+        st.pop("values", None)
+    summary["pos_token_stats"] = pos_stats
+
+    # Constraint satisfaction using provided LTL formula(s)
+    dfa_list = raw_dfa if isinstance(raw_dfa, list) else [raw_dfa]
+    seg_sat_results = []
+    ep_sat_results = []
+
+    for idx, dfa in enumerate(dfa_list):
+        # satisfaction on segments (dataset items)
+        n_seg = min(len(dataset), 1000)
+        seg_sats = []
+        for i in range(n_seg):
+            x, _, _ = dataset[i]
+            sat = adapter.batch_check_dfa_sat(x.unsqueeze(0), dfa)
+            seg_sats.append(float(sat[0].item()))
+        seg_sat_results.append(
+            {
+                "dfa_index": idx,
+                "mean_sat_segments": float(np.mean(seg_sats)) if seg_sats else None,
+                "num_segments_checked": n_seg,
+            }
+        )
+
+        # satisfaction on full episodes
+        if episodes:
+            n_eps = min(len(episodes), 1000)
+            ep_sats = []
+            for ei in range(n_eps):
+                ep = episodes[ei]
+                flat = torch.from_numpy(ep.astype(np.int64).reshape(-1))
+                sat = adapter.batch_check_dfa_sat(flat.unsqueeze(0), dfa)
+                ep_sats.append(float(sat[0].item()))
+            ep_sat_results.append(
+                {
+                    "dfa_index": idx,
+                    "mean_sat_episodes": float(np.mean(ep_sats)) if ep_sats else None,
+                    "num_episodes_checked": n_eps,
+                }
+            )
+
+    summary["constraint_satisfaction_segments"] = seg_sat_results
+    summary["constraint_satisfaction_episodes"] = ep_sat_results
+
+    # Save summary JSON
+    summary_path = os.path.join(out_dir, "summary.json")
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"Dataset analysis saved to: {summary_path}")
+
+
+def replay_dataset_episode(args, dataset):
+    """
+    Visually replay a single offline dataset episode in the environment.
+
+    Uses dataset.episodes_tokens[replay_episode_index] and the associated env.
+    """
+
+    episodes = getattr(dataset, "episodes_tokens", [])
+    if not episodes:
+        print("Dataset has no episodes_tokens; nothing to replay.")
+        return
+
+    ep_idx = getattr(args, "replay_episode_index", 0)
+    if ep_idx < 0 or ep_idx >= len(episodes):
+        print(f"Invalid replay_episode_index {ep_idx}; dataset has {len(episodes)} episodes.")
+        return
+
+    env = dataset.env
+    ep_tokens = episodes[ep_idx]
+
+    print(f"Replaying dataset episode {ep_idx} in env '{args.env}'")
+    obs, _ = env.reset(seed=getattr(args, "seed", None))
+    print("Initial observation (state index):", obs)
+    if args.env == "cb":
+        print(env.render(mode="ansi"))
+    else:
+        print(env.render())
+
+    total_reward = 0.0
+    for t, row in enumerate(ep_tokens[:-1]):  # skip end row
+        state_token = int(row[0])
+        action = int(row[1])
+
+        obs, r, done, info = env.step(action)
+        total_reward += r
+
+        print(f"\nStep {t}:")
+        print(f"  dataset_state_token={state_token}, action={action}, reward={r:.3f}, done={done}, info={info}")
+        if args.env == "cb":
+            print(env.render(mode="ansi"))
+        else:
+            print(env.render())
+
+        if done:
+            break
+
+    print(f"\nEpisode replay finished. Total reward (replayed): {total_reward:.3f}")
+
+
 def get_arg_parser(add_help=True):
     p = argparse.ArgumentParser(add_help=add_help)
 
@@ -594,6 +793,30 @@ def get_arg_parser(add_help=True):
             "Build adapter and DFA(s), print their sizes, and exit "
             "without training or evaluation."
         ),
+    )
+
+    p.add_argument(
+        "--analyze_dataset_only",
+        action="store_true",
+        help=(
+            "Build dataset, adapter and DFA(s), run an in-depth dataset "
+            "analysis (including constraint satisfaction), save plots, and "
+            "exit without training."
+        ),
+    )
+    p.add_argument(
+        "--replay_dataset_episode",
+        action="store_true",
+        help=(
+            "Replay a single offline dataset episode step by step in the "
+            "environment and exit without training."
+        ),
+    )
+    p.add_argument(
+        "--replay_episode_index",
+        type=int,
+        default=0,
+        help="Index of the dataset episode to replay when --replay_dataset_episode is set.",
     )
 
     p.add_argument("--save_path", type=str, default="cb_runs")
