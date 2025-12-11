@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import sys
 from collections import deque
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
@@ -15,6 +16,7 @@ from dfa_adapter import TTDFAAdapter
 from logic_loss_tt import LogicLossModule
 from cb_dataset import CBSequenceDataset
 from nrm_nav_dataset import NRMSafetySequenceDataset
+from nrm_nav_env import NRMSafetyNavEnv
 from DeepAutoma import DeepDFA
 from FiniteStateMachine import DFA
 
@@ -265,13 +267,27 @@ def train(args, return_state=False):
 def evaluate_model(model, adapter, dfa, dataset, batch_size=64):
     """
     Simple evaluation: supervised loss and DFA satisfaction rate on a dataset.
+
+    For nrm_nav, also reports additional safety and reward metrics:
+      - ground-truth vs predicted unsafe-state rates (using fixed unsafe IDs),
+      - ground-truth DFA satisfaction rate,
+      - dataset episode-level average return and unsafe episode rate.
     """
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False)
     model.eval()
     total_loss = 0.0
     total_batches = 0
     total_sat = 0.0
+    total_sat_gt = 0.0
     total_tokens = 0
+
+    # unsafe statistics for nrm_nav (state IDs that are unsafe)
+    track_unsafe = hasattr(dataset, "env") and isinstance(dataset.env, NRMSafetyNavEnv)
+    if track_unsafe:
+        unsafe_ids = {11, 18}
+        gt_unsafe_count = 0
+        pred_unsafe_count = 0
+        state_token_count = 0
 
     with torch.no_grad():
         for batch in loader:
@@ -281,17 +297,205 @@ def evaluate_model(model, adapter, dfa, dataset, batch_size=64):
             if isinstance(dfa, (list, tuple)):
                 sats = [adapter.batch_check_dfa_sat(preds, d) for d in dfa]
                 sat = torch.stack(sats, dim=0).min(dim=0).values
+                sats_gt = [adapter.batch_check_dfa_sat(x, d) for d in dfa]
+                sat_gt = torch.stack(sats_gt, dim=0).min(dim=0).values
             else:
                 sat = adapter.batch_check_dfa_sat(preds, dfa)
+                sat_gt = adapter.batch_check_dfa_sat(x, dfa)
 
             total_loss += sup_loss.item()
             total_batches += 1
             total_sat += sat.sum().item()
+            total_sat_gt += sat_gt.sum().item()
             total_tokens += sat.numel()
+
+            if track_unsafe:
+                # state positions are those where position % transition_dim == 0
+                seq_len = x.shape[1]
+                positions = torch.arange(seq_len, device=x.device)
+                pos_mod = positions % adapter.transition_dim
+                state_positions = pos_mod == 0
+
+                x_states = x[:, state_positions]
+                preds_states = preds[:, state_positions]
+
+                gt_unsafe = torch.zeros_like(x_states, dtype=torch.bool)
+                pred_unsafe = torch.zeros_like(preds_states, dtype=torch.bool)
+                for uid in unsafe_ids:
+                    gt_unsafe |= (x_states == uid)
+                    pred_unsafe |= (preds_states == uid)
+
+                gt_unsafe_count += gt_unsafe.sum().item()
+                pred_unsafe_count += pred_unsafe.sum().item()
+                state_token_count += x_states.numel()
 
     avg_loss = total_loss / max(1, total_batches)
     sat_rate = total_sat / max(1, total_tokens)
-    return {"supervised_loss": avg_loss, "satisfaction_rate": sat_rate}
+    sat_rate_gt = total_sat_gt / max(1, total_tokens)
+
+    metrics = {
+        "supervised_loss": avg_loss,
+        "satisfaction_rate_pred": sat_rate,
+        "satisfaction_rate_gt": sat_rate_gt,
+    }
+
+    if track_unsafe and state_token_count > 0:
+        metrics["unsafe_rate_gt_states"] = gt_unsafe_count / state_token_count
+        metrics["unsafe_rate_pred_states"] = pred_unsafe_count / state_token_count
+
+        # episode-level dataset reward and unsafe episode rate (independent of model)
+        # reconstruct episodes using a fresh env with the same config
+        if hasattr(dataset, "episodes_tokens"):
+            env_cfg = dataset.env.cfg
+            eval_env = NRMSafetyNavEnv(env_cfg)
+            returns = []
+            unsafe_episodes = 0
+            for ep_tokens in dataset.episodes_tokens:
+                obs, _ = eval_env.reset()
+                total_ret = 0.0
+                terminal_info = {}
+                # skip last row which is the special end token
+                for row in ep_tokens[:-1]:
+                    a = int(row[1])
+                    obs, r, done, info = eval_env.step(a)
+                    total_ret += r
+                    if done:
+                        terminal_info = info
+                        break
+                returns.append(total_ret)
+                if terminal_info.get("terminal_type") == "X":
+                    unsafe_episodes += 1
+
+            if returns:
+                metrics["dataset_avg_return"] = float(np.mean(returns))
+                metrics["dataset_return_std"] = float(np.std(returns))
+                metrics["dataset_unsafe_episode_rate"] = unsafe_episodes / len(returns)
+
+    return metrics
+
+
+def rollout_nrm_nav_policy(
+    model,
+    adapter,
+    dfa,
+    env_cfg,
+    num_episodes=100,
+    max_steps=None,
+    greedy=True,
+):
+    """
+    Roll out a policy induced by the model in a fresh NRMSafetyNavEnv and
+    collect episode-level reward and safety statistics, as well as DFA
+    satisfaction on the generated trajectories.
+
+    The model is used autoregressively over token sequences; at each step,
+    the next action is chosen from the model's logits at the last position.
+    """
+
+    env = NRMSafetyNavEnv(env_cfg)
+    model.eval()
+
+    if max_steps is None:
+        max_steps = env_cfg.max_steps
+
+    episode_returns = []
+    episode_lengths = []
+    episode_unsafe = []
+    episode_sat = []
+
+    cum_reward_traces = []
+
+    with torch.no_grad():
+        for _ in range(num_episodes):
+            obs, _ = env.reset()
+            # start history with initial state token
+            history = torch.tensor([[int(obs)]], dtype=torch.long, device=device)
+            tokens_this_ep = [int(obs)]
+
+            cum_reward = 0.0
+            cum_rewards_ts = []
+            unsafe = False
+
+            for _ in range(max_steps):
+                # ensure history length does not exceed model block size
+                if history.shape[1] > model.block_size:
+                    idx = history[:, -model.block_size:]
+                else:
+                    idx = history
+
+                logits, _ = model(idx)
+                last_logits = logits[:, -1, :]
+
+                # restrict to valid discrete actions
+                n_actions = env.action_space.n
+                action_logits = last_logits[:, :n_actions]
+                if greedy:
+                    a = int(torch.argmax(action_logits, dim=-1).item())
+                else:
+                    probs = torch.softmax(action_logits, dim=-1)
+                    a = int(torch.multinomial(probs[0], num_samples=1).item())
+
+                next_obs, r, done, info = env.step(a)
+                cum_reward += r
+                cum_rewards_ts.append(cum_reward)
+
+                cost = 1 if info.get("terminal_type") == "X" else 0
+                if cost == 1:
+                    unsafe = True
+
+                # append tokens matching dataset convention: [action, 0, cost, next_state]
+                new_tokens = [a, 0, cost, int(next_obs)]
+                tokens_this_ep.extend(new_tokens)
+
+                new_tokens_tensor = torch.tensor(new_tokens, dtype=torch.long, device=device).view(1, -1)
+                history = torch.cat([history, new_tokens_tensor], dim=1)
+
+                if done:
+                    break
+
+            episode_returns.append(float(cum_reward))
+            episode_lengths.append(len(cum_rewards_ts))
+            episode_unsafe.append(unsafe)
+            cum_reward_traces.append(cum_rewards_ts)
+
+            # DFA satisfaction on generated trajectory tokens
+            seq_tensor = torch.tensor(tokens_this_ep, dtype=torch.long, device=device).view(1, -1)
+            if isinstance(dfa, (list, tuple)):
+                sats = [adapter.batch_check_dfa_sat(seq_tensor, d) for d in dfa]
+                sat = torch.stack(sats, dim=0).min(dim=0).values
+                sat_flag = float(sat[0].item())
+            else:
+                sat = adapter.batch_check_dfa_sat(seq_tensor, dfa)
+                sat_flag = float(sat[0].item())
+            episode_sat.append(sat_flag)
+
+    # aggregate metrics
+    avg_return = float(np.mean(episode_returns)) if episode_returns else 0.0
+    std_return = float(np.std(episode_returns)) if episode_returns else 0.0
+    avg_len = float(np.mean(episode_lengths)) if episode_lengths else 0.0
+    unsafe_rate = float(np.mean(episode_unsafe)) if episode_unsafe else 0.0
+    sat_rate = float(np.mean(episode_sat)) if episode_sat else 0.0
+
+    # average cumulative reward vs time step
+    max_len = max((len(tr) for tr in cum_reward_traces), default=0)
+    avg_cum_reward_vs_time = []
+    for t in range(max_len):
+        vals = [tr[t] for tr in cum_reward_traces if len(tr) > t]
+        if vals:
+            avg_cum_reward_vs_time.append(float(np.mean(vals)))
+
+    rollout_metrics = {
+        "num_episodes": num_episodes,
+        "avg_return": avg_return,
+        "std_return": std_return,
+        "avg_episode_length": avg_len,
+        "unsafe_episode_rate": unsafe_rate,
+        "satisfaction_rate_rollout": sat_rate,
+        "cum_reward_vs_time": avg_cum_reward_vs_time,
+        "returns": episode_returns,
+    }
+
+    return rollout_metrics
 
 
 def get_arg_parser(add_help=True):

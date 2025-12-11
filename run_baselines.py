@@ -9,6 +9,7 @@ from train_cb import (
     get_arg_parser,
     train,
     evaluate_model,
+    rollout_nrm_nav_policy,
 )
 
 
@@ -34,6 +35,21 @@ def run_baseline(name, args, alpha_override=None, suffix=None):
     metrics = {}
     if args.evaluate:
         metrics = evaluate_model(model, adapter, raw_dfa, dataset, batch_size=args.eval_batch_size)
+        # optional rollout evaluation for nrm_nav
+        if args.eval_rollouts and args.env == "nrm_nav":
+            rollout_metrics = rollout_nrm_nav_policy(
+                model,
+                adapter,
+                raw_dfa,
+                dataset.env.cfg,
+                num_episodes=args.rollout_episodes,
+                max_steps=args.rollout_max_steps,
+                greedy=True,
+            )
+            # prefix rollout metrics to avoid collisions
+            for k, v in rollout_metrics.items():
+                metrics[f"rollout_{k}"] = v
+
         os.makedirs(cfg.save_path, exist_ok=True)
         metrics_path = os.path.join(cfg.save_path, "metrics.json")
         with open(metrics_path, "w") as f:
@@ -63,6 +79,11 @@ def parse_baseline_args():
         help="Run evaluation after training",
     )
     parser.add_argument(
+        "--eval_rollouts",
+        action="store_true",
+        help="For nrm_nav: also evaluate policy rollouts in the environment",
+    )
+    parser.add_argument(
         "--eval_batch_size",
         type=int,
         default=128,
@@ -74,6 +95,18 @@ def parse_baseline_args():
         nargs="+",
         default=[0.4],
         help="Logic loss weights to sweep for logic baseline",
+    )
+    parser.add_argument(
+        "--rollout_episodes",
+        type=int,
+        default=100,
+        help="Number of rollout episodes per model for nrm_nav policy evaluation",
+    )
+    parser.add_argument(
+        "--rollout_max_steps",
+        type=int,
+        default=None,
+        help="Maximum steps per rollout episode (defaults to env max_steps)",
     )
     return parser
 
