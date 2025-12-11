@@ -17,8 +17,8 @@ class NRMSafetyNavConfig:
             [".", ".", ".", ".", "G"],
             [".", "#", "#", ".", "."],
             [".", "X", ".", ".", "."],
-            ["S", ".", ".", "X", "."],
-            [".", ".", ".", ".", "."],
+            [".", ".", ".", "X", "."],
+            ["S", ".", ".", ".", "."],
         ]
         self.step_reward = step_reward
         self.unsafe_reward = unsafe_reward
