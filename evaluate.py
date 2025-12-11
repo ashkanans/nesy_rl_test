@@ -70,8 +70,14 @@ def train_model(args, device):
     adapter, deep_dfa, raw_dfa = build_adapter_and_dfa(args, dataset)
     model = build_model(args, dataset, vocab_size=adapter.num_token_ids - 1)
     logic = LogicLossModule(
-        deep_dfa=deep_dfa, adapter=adapter, mode='global',
-        num_samples=args.num_samples, temperature=args.temperature, alpha=args.alpha,
+        deep_dfa=deep_dfa,
+        adapter=adapter,
+        mode='global',
+        num_samples=args.num_samples,
+        temperature=args.temperature,
+        alpha=args.alpha,
+        eps=getattr(args, "logic_eps", 1e-10),
+        clamp_acceptance=not getattr(args, "no_logic_clamp", False),
     )
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
 

@@ -43,7 +43,8 @@ class LogicLossModule:
 
     def __init__(
         self, deep_dfa, adapter, mode="global",
-        num_samples=10, temperature=0.5, alpha=0.4
+        num_samples=10, temperature=0.5, alpha=0.4,
+        eps=1e-10, clamp_acceptance=True
     ):
         """
         Initialize the logic loss module.
@@ -65,6 +66,13 @@ class LogicLossModule:
                 higher = softer distributions.
             alpha:
                 mixing coefficient in [0, 1] between supervised and logic loss.
+            eps:
+                epsilon used when clamping acceptance probabilities before
+                applying the logarithm; if clamp_acceptance is False or eps <= 0,
+                no clamping is applied.
+            clamp_acceptance:
+                if True, clamp acceptance probabilities from below by eps before
+                taking the log; if False, log(0) is allowed and may produce -inf.
         """
 
         if isinstance(deep_dfa, (list, tuple)):
@@ -76,6 +84,8 @@ class LogicLossModule:
         self.num_samples = num_samples
         self.temperature = temperature
         self.alpha = alpha
+        self.eps = eps
+        self.clamp_acceptance = clamp_acceptance
 
     def _gumbel_softmax_samples(self, logits, num_samples, temperature):
         """
@@ -189,8 +199,12 @@ class LogicLossModule:
         weights = F.softmax(log_prob_traces, dim=-1)
         prob_acceptance = (weights * acceptance).sum(dim=-1)
 
-        eps = 1e-10
-        logic_loss = -torch.log(prob_acceptance.clamp(min=eps)).mean()
+        if self.clamp_acceptance and self.eps is not None and self.eps > 0.0:
+            prob_safe = prob_acceptance.clamp(min=self.eps)
+        else:
+            prob_safe = prob_acceptance
+
+        logic_loss = -torch.log(prob_safe).mean()
 
         total_loss = (1.0 - alpha) * sup_loss + alpha * logic_loss
 

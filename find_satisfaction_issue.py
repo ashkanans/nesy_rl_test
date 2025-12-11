@@ -77,6 +77,7 @@ def main():
     dummy.ltl_formula = None
     dummy.dfa_mode = args.dfa_mode
     dummy.constraint_dims = [0]
+    dummy.use_safe_dfa = True
 
     ds = build_dataset(dummy)
     adapter, deep_dfa, raw_dfa = build_adapter_and_dfa(dummy, ds)

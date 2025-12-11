@@ -187,8 +187,14 @@ def train(args, return_state=False):
     model = build_model(args, dataset, vocab_size=adapter.num_token_ids - 1)
 
     logic = LogicLossModule(
-        deep_dfa=deep_dfa, adapter=adapter, mode='global',
-        num_samples=args.num_samples, temperature=args.temperature, alpha=args.alpha,
+        deep_dfa=deep_dfa,
+        adapter=adapter,
+        mode='global',
+        num_samples=args.num_samples,
+        temperature=args.temperature,
+        alpha=args.alpha,
+        eps=getattr(args, "logic_eps", 1e-10),
+        clamp_acceptance=not getattr(args, "no_logic_clamp", False),
     )
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
@@ -325,6 +331,18 @@ def get_arg_parser(add_help=True):
     p.add_argument("--num_samples", type=int, default=10)
     p.add_argument("--temperature", type=float, default=0.5)
     p.add_argument("--alpha", type=float, default=0.4)
+
+    p.add_argument(
+        "--logic_eps",
+        type=float,
+        default=1e-10,
+        help="Epsilon used to clamp acceptance probabilities before log in logic loss; <=0 disables clamping.",
+    )
+    p.add_argument(
+        "--no_logic_clamp",
+        action="store_true",
+        help="Disable epsilon clamp in logic loss (allow log(0) with -inf).",
+    )
 
     p.add_argument("--save_path", type=str, default="cb_runs")
 
