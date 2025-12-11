@@ -113,8 +113,22 @@ def build_adapter_and_dfa(args, dataset):
         raise ValueError("You must provide --ltl_formula or --ltl_formulas")
 
     dfas = [
-        adapter.create_dfa_from_ltl(f, f"cb_constraint_{i}", use_safe_dfa=args.use_safe_dfa) for i, f in enumerate(formulas)
+        adapter.create_dfa_from_ltl(
+            f, f"cb_constraint_{i}", use_safe_dfa=args.use_safe_dfa
+        )
+        for i, f in enumerate(formulas)
     ]
+
+    if getattr(args, "inspect_dfa_only", False):
+        print("=== DFA inspection (per-formula) ===")
+        print(f"Number of formulas: {len(dfas)}")
+        for i, d in enumerate(dfas):
+            num_states = getattr(d, "num_of_states", None)
+            num_symbols = len(getattr(d, "dictionary_symbols", []))
+            num_accept = sum(getattr(d, "acceptance", []))
+            print(
+                f"  DFA {i}: states={num_states}, accepting_states={num_accept}, symbols={num_symbols}"
+            )
 
     if len(dfas) == 1 or args.dfa_mode == "single":
         dfa = dfas[0]
@@ -128,6 +142,26 @@ def build_adapter_and_dfa(args, dataset):
         raw_dfa = dfas
     else:
         raise ValueError(f"Unknown dfa_mode {args.dfa_mode}")
+
+    if getattr(args, "inspect_dfa_only", False):
+        # Report combined DFA size as well
+        if isinstance(raw_dfa, list):
+            print("=== DFA inspection (combined: multi) ===")
+            for i, d in enumerate(raw_dfa):
+                num_states = getattr(d, "num_of_states", None)
+                num_symbols = len(getattr(d, "dictionary_symbols", []))
+                num_accept = sum(getattr(d, "acceptance", []))
+                print(
+                    f"  DFA {i}: states={num_states}, accepting_states={num_accept}, symbols={num_symbols}"
+                )
+        else:
+            print("=== DFA inspection (combined) ===")
+            num_states = getattr(raw_dfa, "num_of_states", None)
+            num_symbols = len(getattr(raw_dfa, "dictionary_symbols", []))
+            num_accept = sum(getattr(raw_dfa, "acceptance", []))
+            print(
+                f"  DFA: states={num_states}, accepting_states={num_accept}, symbols={num_symbols}"
+            )
 
     return adapter, deep_dfa, raw_dfa
 
@@ -185,6 +219,11 @@ def train(args, return_state=False):
     )
 
     adapter, deep_dfa, raw_dfa = build_adapter_and_dfa(args, dataset)
+
+    # If requested, only inspect DFA sizes and exit before training.
+    if getattr(args, "inspect_dfa_only", False):
+        print("inspect_dfa_only flag set; skipping training and evaluation.")
+        sys.exit(0)
     # GPT expects vocab_size without the extra stop token it appends internally
     model = build_model(args, dataset, vocab_size=adapter.num_token_ids - 1)
 
@@ -546,6 +585,15 @@ def get_arg_parser(add_help=True):
         "--no_logic_clamp",
         action="store_true",
         help="Disable epsilon clamp in logic loss (allow log(0) with -inf).",
+    )
+
+    p.add_argument(
+        "--inspect_dfa_only",
+        action="store_true",
+        help=(
+            "Build adapter and DFA(s), print their sizes, and exit "
+            "without training or evaluation."
+        ),
     )
 
     p.add_argument("--save_path", type=str, default="cb_runs")
