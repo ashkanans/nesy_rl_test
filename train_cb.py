@@ -21,6 +21,7 @@ from nrm_nav_dataset import NRMSafetySequenceDataset
 from nrm_nav_env import NRMSafetyNavEnv
 from DeepAutoma import DeepDFA
 from FiniteStateMachine import DFA
+import FiniteStateMachine as FSM
 
 if torch.cuda.is_available():
     device = 'cuda:0'
@@ -214,6 +215,9 @@ def build_dataset(args):
 
 
 def train(args, return_state=False):
+    # control generic DFA end-state hack
+    FSM.USE_END_HACK = not getattr(args, "no_end_state_hack", False)
+
     dataset = build_dataset(args)
 
     # Optional: replay a single dataset episode and exit.
@@ -246,6 +250,7 @@ def train(args, return_state=False):
         num_samples=args.num_samples,
         temperature=args.temperature,
         alpha=args.alpha,
+        append_end_symbol=getattr(args, "append_end_token_to_dfa", False),
         eps=getattr(args, "logic_eps", 1e-10),
         clamp_acceptance=not getattr(args, "no_logic_clamp", False),
     )
@@ -315,7 +320,15 @@ def train(args, return_state=False):
         return model, adapter, deep_dfa, dataset, raw_dfa
 
 
-def evaluate_model(model, adapter, dfa, dataset, batch_size=64):
+def _append_end_token(tensor_batch, adapter, append_flag):
+    if not append_flag:
+        return tensor_batch
+    end_token = adapter.num_token_ids - 1
+    end_col = torch.full((tensor_batch.shape[0], 1), end_token, device=tensor_batch.device, dtype=tensor_batch.dtype)
+    return torch.cat([tensor_batch, end_col], dim=1)
+
+
+def evaluate_model(model, adapter, dfa, dataset, batch_size=64, append_end_token=False):
     """
     Simple evaluation: supervised loss and DFA satisfaction rate on a dataset.
 
@@ -345,14 +358,19 @@ def evaluate_model(model, adapter, dfa, dataset, batch_size=64):
             x, y, mask = [b.to(device) for b in batch]
             logits, sup_loss = model(x, targets=y, mask=mask)
             preds = logits.argmax(dim=-1)
+            if append_end_token:
+                preds = _append_end_token(preds, adapter, True)
+                x_eval = _append_end_token(x, adapter, True)
+            else:
+                x_eval = x
             if isinstance(dfa, (list, tuple)):
                 sats = [adapter.batch_check_dfa_sat(preds, d) for d in dfa]
                 sat = torch.stack(sats, dim=0).min(dim=0).values
-                sats_gt = [adapter.batch_check_dfa_sat(x, d) for d in dfa]
+                sats_gt = [adapter.batch_check_dfa_sat(x_eval, d) for d in dfa]
                 sat_gt = torch.stack(sats_gt, dim=0).min(dim=0).values
             else:
                 sat = adapter.batch_check_dfa_sat(preds, dfa)
-                sat_gt = adapter.batch_check_dfa_sat(x, dfa)
+                sat_gt = adapter.batch_check_dfa_sat(x_eval, dfa)
 
             total_loss += sup_loss.item()
             total_batches += 1
@@ -433,6 +451,7 @@ def rollout_nrm_nav_policy(
     num_episodes=100,
     max_steps=None,
     greedy=True,
+    append_end_token=False,
 ):
     """
     Roll out a policy induced by the model in a fresh NRMSafetyNavEnv and
@@ -511,6 +530,8 @@ def rollout_nrm_nav_policy(
 
             # DFA satisfaction on generated trajectory tokens
             seq_tensor = torch.tensor(tokens_this_ep, dtype=torch.long, device=device).view(1, -1)
+            if append_end_token:
+                seq_tensor = _append_end_token(seq_tensor, adapter, True)
             if isinstance(dfa, (list, tuple)):
                 sats = [adapter.batch_check_dfa_sat(seq_tensor, d) for d in dfa]
                 sat = torch.stack(sats, dim=0).min(dim=0).values
@@ -649,7 +670,8 @@ def analyze_dataset(args, dataset, adapter, raw_dfa):
         seg_sats = []
         for i in range(n_seg):
             x, _, _ = dataset[i]
-            sat = adapter.batch_check_dfa_sat(x.unsqueeze(0), dfa)
+            x_eval = _append_end_token(x.unsqueeze(0), adapter, getattr(args, "append_end_token_to_dfa", False))
+            sat = adapter.batch_check_dfa_sat(x_eval, dfa)
             seg_sats.append(float(sat[0].item()))
         seg_sat_results.append(
             {
@@ -666,7 +688,8 @@ def analyze_dataset(args, dataset, adapter, raw_dfa):
             for ei in range(n_eps):
                 ep = episodes[ei]
                 flat = torch.from_numpy(ep.astype(np.int64).reshape(-1))
-                sat = adapter.batch_check_dfa_sat(flat.unsqueeze(0), dfa)
+                flat = _append_end_token(flat.unsqueeze(0), adapter, getattr(args, "append_end_token_to_dfa", False))
+                sat = adapter.batch_check_dfa_sat(flat, dfa)
                 ep_sats.append(float(sat[0].item()))
             ep_sat_results.append(
                 {
@@ -792,6 +815,19 @@ def get_arg_parser(add_help=True):
         help=(
             "Build adapter and DFA(s), print their sizes, and exit "
             "without training or evaluation."
+        ),
+    )
+    p.add_argument(
+        "--no_end_state_hack",
+        action="store_true",
+        help="Disable the generic DFA end-state hack (keep original accepting states).",
+    )
+    p.add_argument(
+        "--append_end_token_to_dfa",
+        action="store_true",
+        help=(
+            "Append an 'end' token/symbol to sequences before feeding them to the DFA "
+            "(useful if the DFA expects to see the end symbol to accept)."
         ),
     )
 

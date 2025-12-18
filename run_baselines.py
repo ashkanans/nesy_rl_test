@@ -34,7 +34,14 @@ def run_baseline(name, args, alpha_override=None, suffix=None):
 
     metrics = {}
     if args.evaluate:
-        metrics = evaluate_model(model, adapter, raw_dfa, dataset, batch_size=args.eval_batch_size)
+        metrics = evaluate_model(
+            model,
+            adapter,
+            raw_dfa,
+            dataset,
+            batch_size=args.eval_batch_size,
+            append_end_token=getattr(args, "append_end_token_to_dfa", False),
+        )
         # optional rollout evaluation for nrm_nav
         if args.eval_rollouts and args.env == "nrm_nav":
             rollout_metrics = rollout_nrm_nav_policy(
@@ -45,6 +52,7 @@ def run_baseline(name, args, alpha_override=None, suffix=None):
                 num_episodes=args.rollout_episodes,
                 max_steps=args.rollout_max_steps,
                 greedy=True,
+                append_end_token=getattr(args, "append_end_token_to_dfa", False),
             )
             # prefix rollout metrics to avoid collisions
             for k, v in rollout_metrics.items():

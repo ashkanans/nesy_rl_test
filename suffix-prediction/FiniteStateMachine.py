@@ -10,6 +10,9 @@ from pythomata import SymbolicAutomaton
 from ltlf2dfa.parser.ltlf import LTLfParser
 from DeepAutoma import DeepDFA, device
 
+# Control whether to add the end-state hack (force acceptance only after seeing "end")
+USE_END_HACK = True
+
 
 def dot2dfa(dot):
     # with tempfile.TemporaryFile() as file1:
@@ -178,43 +181,34 @@ class DFA:
         os.makedirs("simpleDFAs", exist_ok=True)
         self.write_dot_file("simpleDFAs/{}.dot".format(formula_name))
 
-        ########## MANAGE THE END SYMBOL
-        ## add two terminal states
-        end_with_succes = len(self.transitions)
-        end_with_failure = end_with_succes + 1
-        self.num_of_states += 2
-        print(end_with_succes)
-        # 'end with succes'
-        self.transitions[end_with_succes] = {}
-        self.acceptance.append(True)
-        # ' end with failure'
-        self.transitions[end_with_failure] = {}
-        self.acceptance.append(False)
-        for activity in range(len(self.alphabet)):
-            # se faccio end rimango nell success altrimenti vado nel failure
-            # if activity == len(self.alphabet) - 1:
-            self.transitions[end_with_succes][activity] = end_with_succes
-            # else:
-            #    self.transitions[end_with_succes][activity] = end_with_failure
-            # TODO: fare che da end_with_failure con end vado in end_with_success (così che c'è sempre almeno una mossa permessa
-            if activity == len(self.alphabet) - 1:
-                self.transitions[end_with_failure][activity] = end_with_succes
-            else:
-                self.transitions[end_with_failure][activity] = end_with_failure
-        ## adjust 'end' transitions
-        num_of_symbols = len(self.alphabet)
-        for state in self.transitions.keys():
-            # all the final states go to 'end with success' with symbol end
-            if self.acceptance[state]:
-                self.transitions[state][num_of_symbols - 1] = end_with_succes
-            # all the non-final states go to 'end with failure' with symbol end
-            else:
-                self.transitions[state][num_of_symbols - 1] = end_with_failure
-        ##(OPTIONAL) you cannot end multiple times
-        # self.transitions[num_states][num_of_symbols -1] = num_states + 1
-        ## adjust finality
-        for state in range(end_with_succes):
-            self.acceptance[state] = False
+        if USE_END_HACK:
+            ########## MANAGE THE END SYMBOL
+            ## add two terminal states
+            end_with_succes = len(self.transitions)
+            end_with_failure = end_with_succes + 1
+            self.num_of_states += 2
+            # 'end with succes'
+            self.transitions[end_with_succes] = {}
+            self.acceptance.append(True)
+            # ' end with failure'
+            self.transitions[end_with_failure] = {}
+            self.acceptance.append(False)
+            for activity in range(len(self.alphabet)):
+                self.transitions[end_with_succes][activity] = end_with_succes
+                if activity == len(self.alphabet) - 1:
+                    self.transitions[end_with_failure][activity] = end_with_succes
+                else:
+                    self.transitions[end_with_failure][activity] = end_with_failure
+            ## adjust 'end' transitions
+            num_of_symbols = len(self.alphabet)
+            for state in self.transitions.keys():
+                if self.acceptance[state]:
+                    self.transitions[state][num_of_symbols - 1] = end_with_succes
+                else:
+                    self.transitions[state][num_of_symbols - 1] = end_with_failure
+            ## adjust finality
+            for state in range(end_with_succes):
+                self.acceptance[state] = False
 
         self.write_dot_file("simpleDFAs/{}_final.dot".format(formula_name))
 
