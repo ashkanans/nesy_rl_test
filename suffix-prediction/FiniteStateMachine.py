@@ -131,7 +131,10 @@ def _build_dfa_with_spot(ltl_formula, dictionary_symbols, formula_name):
         if hasattr(bdd_dict, "declare"):
             bdd_dict.declare(ap)
         elif hasattr(bdd_dict, "register_proposition"):
-            bdd_dict.register_proposition(spot.formula(ap))
+            try:
+                bdd_dict.register_proposition(spot.formula(ap), None)
+            except TypeError:
+                bdd_dict.register_proposition(spot.formula(ap))
         else:
             # Last resort: accessing the var creates it in older APIs
             bdd_dict.var(ap)
