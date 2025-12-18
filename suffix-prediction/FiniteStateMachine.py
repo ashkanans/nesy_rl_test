@@ -128,7 +128,13 @@ def _build_dfa_with_spot(ltl_formula, dictionary_symbols, formula_name):
 
     bdd_dict = spot.make_bdd_dict()
     for ap in ap_list:
-        bdd_dict.declare(ap)
+        if hasattr(bdd_dict, "declare"):
+            bdd_dict.declare(ap)
+        elif hasattr(bdd_dict, "register_proposition"):
+            bdd_dict.register_proposition(ap)
+        else:
+            # Last resort: accessing the var creates it in older APIs
+            bdd_dict.var(ap)
 
     formula = spot.formula(ltl_formula)
     aut = spot.translate(
