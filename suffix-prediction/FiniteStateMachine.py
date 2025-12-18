@@ -98,14 +98,13 @@ def dot2dfa(dot):
 def _one_hot_bdd(symbols, target_symbol, bdd_dict):
     """
     Build a BDD valuation where exactly one atomic proposition is true.
+    Note: kept for reference; current Spot path uses single-var BDDs instead.
     """
-    bdd = bdd_dict.true()
+    bdd = bdd_dict.var(target_symbol)
     for ap in symbols:
-        var = bdd_dict.var(ap)
         if ap == target_symbol:
-            bdd &= var
-        else:
-            bdd &= ~var
+            continue
+        bdd &= ~bdd_dict.var(ap)
     return bdd
 
 
@@ -156,10 +155,10 @@ def _build_dfa_with_spot(ltl_formula, dictionary_symbols, formula_name):
     sink_state = None
     num_states = aut.num_states()
 
-    # Precompute one-hot BDDs for each symbol
-    symbol_bdds = {
-        sym: _one_hot_bdd(ap_list, sym, bdd_dict) for sym in ap_list
-    }
+    # Precompute single-var BDDs for each symbol
+    symbol_bdds = {sym: bdd_dict.var(sym) for sym in ap_list}
+    _bddfalse_attr = getattr(spot, "bddfalse", None)
+    bdd_false = _bddfalse_attr() if callable(_bddfalse_attr) else _bddfalse_attr
 
     for s in range(num_states):
         acceptance.append(aut.state_is_accepting(s))
@@ -168,7 +167,7 @@ def _build_dfa_with_spot(ltl_formula, dictionary_symbols, formula_name):
             letter_bdd = symbol_bdds[sym]
             dst = None
             for e in aut.out(s):
-                if (e.cond & letter_bdd) != bdd_dict.false():
+                if (e.cond & letter_bdd) != bdd_false:
                     dst = e.dst
                     break
             if dst is None:
