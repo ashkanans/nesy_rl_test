@@ -14,6 +14,12 @@ from DeepAutoma import DeepDFA, device
 USE_END_HACK = True
 
 
+def _write_dot(dot_string, out_path):
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w") as f:
+        f.write(dot_string)
+
+
 def dot2dfa(dot):
     # with tempfile.TemporaryFile() as file1:
     #     print(dot)
@@ -89,6 +95,89 @@ def dot2dfa(dot):
     return automaton
 
 
+def _one_hot_bdd(symbols, target_symbol, bdd_dict):
+    """
+    Build a BDD valuation where exactly one atomic proposition is true.
+    """
+    bdd = bdd_dict.true()
+    for ap in symbols:
+        var = bdd_dict.var(ap)
+        if ap == target_symbol:
+            bdd &= var
+        else:
+            bdd &= ~var
+    return bdd
+
+
+def _build_dfa_with_spot(ltl_formula, dictionary_symbols, formula_name):
+    """
+    Try to build a complete DFA with Spot (if installed).
+
+    Returns:
+        transitions: dict[state][symbol_idx] -> next_state
+        acceptance: list[bool]
+        dot_source: str (Graphviz)
+    Raises:
+        ImportError if spot is not available.
+        Exception for any Spot failure.
+    """
+    import spot  # type: ignore
+
+    alphabet = list(dictionary_symbols)
+    ap_list = list(alphabet)
+
+    bdd_dict = spot.make_bdd_dict()
+    for ap in ap_list:
+        bdd_dict.declare(ap)
+
+    formula = spot.formula(ltl_formula)
+    aut = spot.translate(
+        formula,
+        "deterministic",
+        "complete",
+        "sbacc",
+        "high",
+    )
+    # ensure the dictionary knows about all symbols
+    aut.set_bdd_dict(bdd_dict)
+
+    dot_source = aut.to_str("dot")
+
+    transitions = {}
+    acceptance = []
+    sink_state = None
+    num_states = aut.num_states()
+
+    # Precompute one-hot BDDs for each symbol
+    symbol_bdds = {
+        sym: _one_hot_bdd(ap_list, sym, bdd_dict) for sym in ap_list
+    }
+
+    for s in range(num_states):
+        acceptance.append(aut.state_is_accepting(s))
+        transitions[s] = {}
+        for sym_idx, sym in enumerate(alphabet):
+            letter_bdd = symbol_bdds[sym]
+            dst = None
+            for e in aut.out(s):
+                if (e.cond & letter_bdd) != bdd_dict.false():
+                    dst = e.dst
+                    break
+            if dst is None:
+                if sink_state is None:
+                    sink_state = num_states  # first free index
+                dst = sink_state
+            transitions[s][sym_idx] = dst
+
+    if sink_state is not None:
+        transitions[sink_state] = {
+            i: sink_state for i in range(len(alphabet))
+        }
+        acceptance.append(False)
+
+    return transitions, acceptance, dot_source
+
+
 class DFA:
 
     def __init__(self, arg1, arg2, arg3, dictionary_symbols=None):
@@ -115,6 +204,7 @@ class DFA:
             raise Exception("Uncorrect type for the argument initializing th DFA: {}".format(type(arg1)))
 
     def init_from_ltl(self, ltl_formula, num_symbols, formula_name, dictionary_symbols):
+        self.dictionary_symbols = dictionary_symbols
 
         # From LTL to DFA
         #   parser = LTLfParser()
@@ -126,57 +216,58 @@ class DFA:
 
         #   print(f'formula: {ltl_formula}')
 
-        parser = LTLfParser()
-        with io.StringIO() as buf_out, io.StringIO() as buf_err, contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
-            ast = parser(ltl_formula)
-            dot = ast.to_dfa()
-        #   # print the automaton
+        builder_used = None
+        spot_error = None
+        try:
+            trans, acc, dot_source = _build_dfa_with_spot(
+                ltl_formula, dictionary_symbols, formula_name
+            )
+            builder_used = "spot"
+        except Exception as e:
+            spot_error = e
+            # Fallback to the legacy ltlf2dfa path
+            parser = LTLfParser()
+            with io.StringIO() as buf_out, io.StringIO() as buf_err, contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+                ast = parser(ltl_formula)
+                dot = ast.to_dfa()
+            dot_source = dot
+            dfa = dot2dfa(dot)
+            self.alphabet = dictionary_symbols
+            trans = self.reduce_dfa(dfa)
+            acc = []
+            for s in range(len(trans)):
+                acc.append(s in dfa._final_states)
+            builder_used = "ltlf2dfa"
 
-        # Make sure the directory exists
-        os.makedirs("symbolicDFAs", exist_ok=True)
-        with open("symbolicDFAs/" + formula_name + ".dot", "w+") as f:
-            f.write(dot)
+        if builder_used == "ltlf2dfa" and spot_error is not None:
+            print(
+                f"[DFA] Spot translation unavailable ({spot_error}); "
+                "falling back to ltlf2dfa."
+            )
 
-        #   try:
-        #     dfa = dot2dfa(dot)
-        #   except Exception as e:
-        #     print(f'dfa conversion failed ({type(e)}), formula was {ltl_formula}, dot was: {dot}')
-        #     raise
-
-        dfa = dot2dfa(dot)
-        graph = dfa.to_graphviz()
-        graph.render("symbolicDFAs/" + formula_name)
-
-        # print("original dfa")
-        # print(dfa.__dict__)
         self.alphabet = dictionary_symbols
-        self.transitions = self.reduce_dfa(dfa)
-        # print(self.transitions)
+        self.transitions = trans
+        self.acceptance = acc
         self.num_of_states = len(self.transitions)
-        self.acceptance = []
-        for s in range(self.num_of_states):
-            if s in dfa._final_states:
-                self.acceptance.append(True)
-            else:
-                self.acceptance.append(False)
-        # print(self.acceptance)
-        # print("dfa after reduction")
-        # print(self.__dict__)
-        # Complete the transition function with the symbols of the environment that ARE NOT in the formula
         self.num_of_symbols = len(dictionary_symbols)
-        self.alphabet = []
-        for a in range(self.num_of_symbols):
-            self.alphabet.append(a)
-        if len(self.transitions[0]) < self.num_of_symbols:
-            for s in range(self.num_of_states):
-                for sym in self.alphabet:
-                    if sym not in self.transitions[s].keys():
-                        self.transitions[s][sym] = s
 
-        # print("dfa after completion")
-        # print(dfa.__dict__)
-        # print("Complete transition function")
-        # print(self.transitions)
+        # Complete missing transitions so the DFA is total over the given alphabet
+        for s in range(self.num_of_states):
+            if s not in self.transitions:
+                self.transitions[s] = {}
+            for sym in range(self.num_of_symbols):
+                if sym not in self.transitions[s]:
+                    self.transitions[s][sym] = s
+
+        # Save the symbolic DOT (before the end hack)
+        try:
+            _write_dot(dot_source, "symbolicDFAs/" + formula_name + ".dot")
+            graph = Source(dot_source)
+            graph.render("symbolicDFAs/" + formula_name)
+        except Exception:
+            # keep going even if rendering fails (e.g., on headless systems)
+            pass
+
         # Make sure the directory exists
         os.makedirs("simpleDFAs", exist_ok=True)
         self.write_dot_file("simpleDFAs/{}.dot".format(formula_name))
