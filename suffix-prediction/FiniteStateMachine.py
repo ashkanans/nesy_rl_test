@@ -123,10 +123,20 @@ def _build_dfa_with_spot(ltl_formula, dictionary_symbols, formula_name):
     """
     import spot  # type: ignore
 
+    formula = spot.formula(ltl_formula)
+    aut = spot.translate(
+        formula,
+        "deterministic",
+        "complete",
+        "sbacc",
+        "high",
+    )
+
     alphabet = list(dictionary_symbols)
     ap_list = list(alphabet)
 
-    bdd_dict = spot.make_bdd_dict()
+    # Use the automaton's dictionary; register our APs there
+    bdd_dict = aut.get_dict()
     for ap in ap_list:
         if hasattr(bdd_dict, "declare"):
             bdd_dict.declare(ap)
@@ -138,17 +148,6 @@ def _build_dfa_with_spot(ltl_formula, dictionary_symbols, formula_name):
         else:
             # Last resort: accessing the var creates it in older APIs
             bdd_dict.var(ap)
-
-    formula = spot.formula(ltl_formula)
-    aut = spot.translate(
-        formula,
-        "deterministic",
-        "complete",
-        "sbacc",
-        "high",
-    )
-    # ensure the dictionary knows about all symbols
-    aut.set_bdd_dict(bdd_dict)
 
     dot_source = aut.to_str("dot")
 
