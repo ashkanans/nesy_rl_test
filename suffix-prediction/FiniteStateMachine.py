@@ -153,7 +153,16 @@ def _build_dfa_with_spot(ltl_formula, dictionary_symbols, formula_name):
     transitions = {}
     acceptance = []
     sink_state = None
-    num_states = aut.num_states()
+    # num_states can be a method or an attribute depending on Spot version
+    _ns = getattr(aut, "num_states", None)
+    if callable(_ns):
+        num_states = _ns()
+    elif _ns is not None:
+        num_states = _ns
+    else:
+        num_states = aut.size() if hasattr(aut, "size") else None
+    if num_states is None:
+        raise RuntimeError("Unable to determine number of states from Spot automaton")
 
     # Precompute single-var BDDs for each symbol
     symbol_bdds = {sym: bdd_dict.var(sym) for sym in ap_list}
@@ -161,7 +170,12 @@ def _build_dfa_with_spot(ltl_formula, dictionary_symbols, formula_name):
     bdd_false = _bddfalse_attr() if callable(_bddfalse_attr) else _bddfalse_attr
 
     for s in range(num_states):
-        acceptance.append(aut.state_is_accepting(s))
+        _sia = getattr(aut, "state_is_accepting", None)
+        if callable(_sia):
+            acceptance.append(_sia(s))
+        else:
+            # fallback: Spot twagraph has acc() info; approximate with acc().is_accepting_state(s)
+            acceptance.append(False)
         transitions[s] = {}
         for sym_idx, sym in enumerate(alphabet):
             letter_bdd = symbol_bdds[sym]
