@@ -54,6 +54,7 @@ RUN python -m pip install --no-cache-dir "mujoco-py==2.1.2.14" \
 RUN git clone https://github.com/ikostrikov/implicit_q_learning /opt/implicit_q_learning \
     && sed -i '/mujoco[-_]py/d' /opt/implicit_q_learning/requirements.txt \
     && sed -i '/^d4rl/d' /opt/implicit_q_learning/requirements.txt \
+    && sed -i 's/^gym\\[mujoco\\]>=/gym>=/' /opt/implicit_q_learning/requirements.txt \
     && python -m pip install --no-cache-dir --no-build-isolation -r /opt/implicit_q_learning/requirements.txt
 
 # JAX with GPU support (match to CUDA in the base image)
