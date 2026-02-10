@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     git curl ca-certificates \
     build-essential pkg-config graphviz \
+    ffmpeg \
     patchelf libgl1-mesa-dev libosmesa6-dev libglu1-mesa \
     && rm -rf /var/lib/apt/lists/*
 
