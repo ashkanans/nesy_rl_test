@@ -30,6 +30,7 @@ WORKDIR /workspace/nesy_rl
 
 COPY requirements.txt ./requirements.txt
 COPY trajectory-transformer ./trajectory-transformer
+COPY implicit_q_learning ./implicit_q_learning
 RUN python -m pip install --no-cache-dir -r requirements.txt
 
 # MuJoCo Python bindings (official)
@@ -49,12 +50,11 @@ RUN python -m pip install --no-cache-dir lockfile \
 # D4RL
 RUN python -m pip install --no-cache-dir "git+https://github.com/Farama-Foundation/d4rl@master#egg=d4rl"
 
-# IQL (official JAX repo)
-RUN git clone https://github.com/ikostrikov/implicit_q_learning /opt/implicit_q_learning \
-    && python - <<'PY'
+# IQL (vendored)
+RUN python - <<'PY'
 from pathlib import Path
 
-req = Path('/opt/implicit_q_learning/requirements.txt')
+req = Path('/workspace/nesy_rl/implicit_q_learning/requirements.txt')
 lines = req.read_text().splitlines()
 filtered = []
 
@@ -72,7 +72,7 @@ for line in lines:
 req.write_text('\n'.join(filtered) + '\n')
 PY
 
-RUN python -m pip install --no-cache-dir --no-build-isolation -r /opt/implicit_q_learning/requirements.txt
+RUN python -m pip install --no-cache-dir --no-build-isolation -r /workspace/nesy_rl/implicit_q_learning/requirements.txt
 
 # JAX with GPU support (match to CUDA in the base image)
 # Pin to the same version IQL pulls to avoid drift.
