@@ -1,3 +1,4 @@
+import json
 import os
 from typing import Tuple
 
@@ -76,6 +77,32 @@ def make_env_and_dataset(env_name: str,
     return env, dataset
 
 
+def save_checkpoint(save_dir: str, agent: Learner, dataset: D4RLDataset):
+    ckpt_dir = os.path.join(save_dir, 'checkpoints')
+    os.makedirs(ckpt_dir, exist_ok=True)
+
+    agent.actor.save(os.path.join(ckpt_dir, 'actor.pkl'))
+    agent.critic.save(os.path.join(ckpt_dir, 'critic.pkl'))
+    agent.value.save(os.path.join(ckpt_dir, 'value.pkl'))
+    agent.target_critic.save(os.path.join(ckpt_dir, 'target_critic.pkl'))
+
+    obs_mean = dataset.observations.mean(axis=0)
+    obs_std = dataset.observations.std(axis=0) + 1e-6
+    act_mean = dataset.actions.mean(axis=0)
+    act_std = dataset.actions.std(axis=0) + 1e-6
+
+    np.savez(
+        os.path.join(ckpt_dir, 'normalization_stats.npz'),
+        obs_mean=obs_mean,
+        obs_std=obs_std,
+        act_mean=act_mean,
+        act_std=act_std,
+    )
+
+    with open(os.path.join(ckpt_dir, 'config.json'), 'w') as f:
+        json.dump(dict(FLAGS.config), f, indent=2, sort_keys=True)
+
+
 def main(_):
     summary_writer = SummaryWriter(os.path.join(FLAGS.save_dir, 'tb',
                                                 str(FLAGS.seed)),
@@ -118,6 +145,8 @@ def main(_):
             np.savetxt(os.path.join(FLAGS.save_dir, f'{FLAGS.seed}.txt'),
                        eval_returns,
                        fmt=['%d', '%.1f'])
+
+    save_checkpoint(FLAGS.save_dir, agent, dataset)
 
 
 if __name__ == '__main__':
