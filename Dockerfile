@@ -51,6 +51,7 @@ RUN python -m pip install --no-cache-dir "git+https://github.com/Farama-Foundati
 
 # IQL (official JAX repo)
 RUN git clone https://github.com/ikostrikov/implicit_q_learning /opt/implicit_q_learning \
+    && sed -i '/^mujoco-py/d' /opt/implicit_q_learning/requirements.txt \
     && python -m pip install --no-cache-dir --no-build-isolation -r /opt/implicit_q_learning/requirements.txt
 
 # JAX with GPU support (match to CUDA in the base image)
