@@ -119,7 +119,8 @@ for t in range(T):
         ## save rollout thus far
         renderer.render_rollout(join(args.savepath, f'rollout.mp4'), rollout, fps=80)
 
-if terminal: break
+    if terminal:
+        break
 
     observation = next_observation
 
