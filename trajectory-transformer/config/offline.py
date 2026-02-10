@@ -70,6 +70,11 @@ base = {
         'max_context_transitions': 5,
         'prefix_context': True,
 
+        'use_q_heuristic': False,
+        'q_weight': 1.0,
+        'q_host': '127.0.0.1',
+        'q_port': 5555,
+
         'vis_freq': 50,
         'exp_name': watch(args_to_watch),
         'prefix': 'plans/defaults/',

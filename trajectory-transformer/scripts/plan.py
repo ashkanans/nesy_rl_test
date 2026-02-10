@@ -46,6 +46,10 @@ action_dim = dataset.action_dim
 
 value_fn = lambda x: discretizer.value_fn(x, args.percentile)
 preprocess_fn = datasets.get_preprocess_fn(env.name)
+q_client = None
+if getattr(args, 'use_q_heuristic', False):
+    q_client = utils.QClient(args.q_host, args.q_port)
+    q_client.connect()
 
 #######################
 ###### main loop ######
@@ -75,6 +79,10 @@ for t in range(T):
             args.horizon, args.beam_width, args.n_expand, observation_dim, action_dim,
             discount, args.max_context_transitions, verbose=args.verbose,
             k_obs=args.k_obs, k_act=args.k_act, cdf_obs=args.cdf_obs, cdf_act=args.cdf_act,
+            discretizer=discretizer,
+            use_q_heuristic=args.use_q_heuristic,
+            q_client=q_client,
+            q_weight=args.q_weight,
         )
 
     else:
@@ -111,9 +119,12 @@ for t in range(T):
         ## save rollout thus far
         renderer.render_rollout(join(args.savepath, f'rollout.mp4'), rollout, fps=80)
 
-    if terminal: break
+if terminal: break
 
     observation = next_observation
+
+if q_client is not None:
+    q_client.close()
 
 ## save result as a json file
 json_path = join(args.savepath, 'rollout.json')

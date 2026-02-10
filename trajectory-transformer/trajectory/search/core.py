@@ -16,6 +16,8 @@ def beam_plan(
     k_obs=None, k_act=None, k_rew=1,
     cdf_obs=None, cdf_act=None, cdf_rew=None,
     verbose=True, previous_actions=None,
+    discretizer=None, use_q_heuristic=False,
+    q_client=None, q_weight=1.0,
 ):
     '''
         x : tensor[ 1 x input_sequence_length ]
@@ -64,6 +66,18 @@ def beam_plan(
 
         ## estimate values using rewards up to `t` and terminal value at `t`
         values = (rewards * discounts).sum(dim=-1)
+
+        q_values = None
+        if use_q_heuristic:
+            assert discretizer is not None, 'discretizer required for Q heuristic'
+            assert q_client is not None, 'q_client required for Q heuristic'
+            last_transition = x[:, -transition_dim:]
+            last_transition_np = last_transition.detach().cpu().numpy()
+            recon = discretizer.reconstruct(last_transition_np)
+            obs = recon[:, :observation_dim]
+            acts = recon[:, observation_dim:observation_dim + action_dim]
+            q_values = q_client.query(obs, acts)
+            values = torch.as_tensor(q_values, device=x.device, dtype=torch.float32) * q_weight
 
         ## get `beam_width` best actions
         values, inds = torch.topk(values, beam_width)
