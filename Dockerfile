@@ -72,7 +72,8 @@ for line in lines:
 
 req.write_text('\n'.join(filtered) + '\n')
 PY
-    && python -m pip install --no-cache-dir --no-build-isolation -r /opt/implicit_q_learning/requirements.txt
+
+RUN python -m pip install --no-cache-dir --no-build-isolation -r /opt/implicit_q_learning/requirements.txt
 
 # JAX with GPU support (match to CUDA in the base image)
 # For CUDA 12.x, JAX docs recommend jax[cuda12]
