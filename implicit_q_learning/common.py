@@ -59,7 +59,10 @@ class Model:
                tx: Optional[optax.GradientTransformation] = None) -> 'Model':
         variables = model_def.init(*inputs)
 
-        _, params = variables.pop('params')
+        try:
+            params = variables['params']
+        except Exception:
+            _, params = variables.pop('params')
 
         if tx is not None:
             opt_state = tx.init(params)
