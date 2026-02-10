@@ -52,7 +52,27 @@ RUN python -m pip install --no-cache-dir "mujoco-py==2.1.2.14" \
 
 # IQL (official JAX repo)
 RUN git clone https://github.com/ikostrikov/implicit_q_learning /opt/implicit_q_learning \
-    && python - <<'PY'\nfrom pathlib import Path\nreq = Path('/opt/implicit_q_learning/requirements.txt')\nlines = req.read_text().splitlines()\nfiltered = []\nfor line in lines:\n    s = line.strip()\n    if not s or s.startswith('#'):\n        continue\n    # Drop legacy mujoco_py and d4rl dependencies entirely\n    if 'mujoco_py' in s or 'mujoco-py' in s or s.startswith('d4rl'):\n        continue\n    # Replace gym[mujoco] extra with plain gym\n    s = s.replace('gym[mujoco]', 'gym')\n    filtered.append(s)\nreq.write_text('\\n'.join(filtered) + '\\n')\nPY\n    && python -m pip install --no-cache-dir --no-build-isolation -r /opt/implicit_q_learning/requirements.txt
+    && python - <<'PY'
+from pathlib import Path
+
+req = Path('/opt/implicit_q_learning/requirements.txt')
+lines = req.read_text().splitlines()
+filtered = []
+
+for line in lines:
+    s = line.strip()
+    if not s or s.startswith('#'):
+        continue
+    # Drop legacy mujoco_py and d4rl dependencies entirely
+    if 'mujoco_py' in s or 'mujoco-py' in s or s.startswith('d4rl'):
+        continue
+    # Replace gym[mujoco] extra with plain gym
+    s = s.replace('gym[mujoco]', 'gym')
+    filtered.append(s)
+
+req.write_text('\n'.join(filtered) + '\n')
+PY
+    && python -m pip install --no-cache-dir --no-build-isolation -r /opt/implicit_q_learning/requirements.txt
 
 # JAX with GPU support (match to CUDA in the base image)
 # For CUDA 12.x, JAX docs recommend jax[cuda12]
