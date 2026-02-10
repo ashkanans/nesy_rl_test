@@ -62,6 +62,7 @@ RUN ${VENV_TORCH}/bin/python -m pip install --no-cache-dir "git+https://github.c
 
 # IQL (vendored) in JAX venv
 RUN ${VENV_JAX}/bin/python -m pip install --no-cache-dir "jax[cuda12]==0.6.2"
+RUN ${VENV_JAX}/bin/python -m pip install --no-cache-dir "numpy==1.26.4"
 RUN ${VENV_JAX}/bin/python -m pip install --no-cache-dir gym==0.23.1 mujoco
 RUN ${VENV_JAX}/bin/python -m pip install --no-cache-dir \
         "Cython<3" glfw imageio cffi fasteners lockfile \
