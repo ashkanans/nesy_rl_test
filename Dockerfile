@@ -14,11 +14,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     patchelf libgl1-mesa-dev libosmesa6-dev libglu1-mesa \
     && rm -rf /var/lib/apt/lists/*
 
-# Create venv (so pip installs don't fight system python)
-RUN python3.10 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+# Create separate venvs for Torch and JAX to avoid CUDA/cuDNN conflicts
+ENV VENV_TORCH=/opt/venv-torch
+ENV VENV_JAX=/opt/venv-jax
 
-RUN python -m pip install -U pip setuptools wheel
+RUN python3.10 -m venv ${VENV_TORCH} \
+    && python3.10 -m venv ${VENV_JAX}
+
+# Default to Torch venv
+ENV PATH="${VENV_TORCH}/bin:$PATH"
+
+RUN ${VENV_TORCH}/bin/python -m pip install -U pip setuptools wheel \
+    && ${VENV_JAX}/bin/python -m pip install -U pip setuptools wheel
 
 ARG USERNAME=researcher
 ARG UID=1000
@@ -31,10 +38,10 @@ WORKDIR /workspace/nesy_rl
 COPY requirements.txt ./requirements.txt
 COPY trajectory-transformer ./trajectory-transformer
 COPY implicit_q_learning ./implicit_q_learning
-RUN python -m pip install --no-cache-dir -r requirements.txt
+RUN ${VENV_TORCH}/bin/python -m pip install --no-cache-dir -r requirements.txt
 
 # MuJoCo Python bindings (official)
-RUN python -m pip install --no-cache-dir mujoco
+RUN ${VENV_TORCH}/bin/python -m pip install --no-cache-dir mujoco
 
 # MuJoCo 2.1 for mujoco-py (used by D4RL/IQL)
 RUN mkdir -p /opt/mujoco210 \
@@ -44,39 +51,19 @@ ENV MUJOCO_PY_MUJOCO_PATH=/opt/mujoco210
 ENV LD_LIBRARY_PATH=/opt/mujoco210/bin:${LD_LIBRARY_PATH}
 
 # Preinstall mujoco-py to avoid build isolation issues
-RUN python -m pip install --no-cache-dir lockfile \
-    && python -m pip install --no-cache-dir "mujoco-py==2.1.2.14"
+RUN ${VENV_TORCH}/bin/python -m pip install --no-cache-dir lockfile \
+    && ${VENV_TORCH}/bin/python -m pip install --no-cache-dir "mujoco-py==2.1.2.14"
 
 # D4RL
-RUN python -m pip install --no-cache-dir "git+https://github.com/Farama-Foundation/d4rl@master#egg=d4rl"
+RUN ${VENV_TORCH}/bin/python -m pip install --no-cache-dir "git+https://github.com/Farama-Foundation/d4rl@master#egg=d4rl"
 
-# IQL (vendored)
-RUN python - <<'PY'
-from pathlib import Path
-
-req = Path('/workspace/nesy_rl/implicit_q_learning/requirements.txt')
-lines = req.read_text().splitlines()
-filtered = []
-
-for line in lines:
-    s = line.strip()
-    if not s or s.startswith('#'):
-        continue
-    # Drop legacy mujoco_py and d4rl dependencies entirely
-    if 'mujoco_py' in s or 'mujoco-py' in s or s.startswith('d4rl'):
-        continue
-    # Replace gym[mujoco] extra with plain gym
-    s = s.replace('gym[mujoco]', 'gym')
-    filtered.append(s)
-
-req.write_text('\n'.join(filtered) + '\n')
-PY
-
-RUN python -m pip install --no-cache-dir --no-build-isolation -r /workspace/nesy_rl/implicit_q_learning/requirements.txt
-
-# JAX with GPU support (match to CUDA in the base image)
-# Pin to the same version IQL pulls to avoid drift.
-RUN python -m pip install --no-cache-dir "jax[cuda12]==0.6.2"
+# IQL (vendored) in JAX venv
+RUN ${VENV_JAX}/bin/python -m pip install --no-cache-dir "jax[cuda12]==0.6.2"
+RUN ${VENV_JAX}/bin/python -m pip install --no-cache-dir \
+    gym==0.23.1 mujoco lockfile "mujoco-py==2.1.2.14"
+RUN ${VENV_JAX}/bin/python -m pip install --no-cache-dir "git+https://github.com/Farama-Foundation/d4rl@master#egg=d4rl"
+RUN ${VENV_JAX}/bin/python -m pip install --no-cache-dir --no-build-isolation \
+    -r /workspace/nesy_rl/implicit_q_learning/requirements.txt
 
 ENV PYTHONPATH=/workspace/nesy_rl:${PYTHONPATH}
 
