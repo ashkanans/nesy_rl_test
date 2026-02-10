@@ -49,23 +49,30 @@ RUN mkdir -p /opt/mujoco210 \
     | tar -xz -C /opt
 ENV MUJOCO_PY_MUJOCO_PATH=/opt/mujoco210
 ENV LD_LIBRARY_PATH=/opt/mujoco210/bin:${LD_LIBRARY_PATH}
+ENV D4RL_SUPPRESS_IMPORT_ERROR=1
+ENV MUJOCO_GL=egl
 
-# Preinstall mujoco-py to avoid build isolation issues
-RUN ${VENV_TORCH}/bin/python -m pip install --no-cache-dir lockfile \
-    && ${VENV_TORCH}/bin/python -m pip install --no-cache-dir "mujoco-py==2.1.2.14"
+# Preinstall mujoco-py with Cython<3 to avoid build failures
+RUN ${VENV_TORCH}/bin/python -m pip install --no-cache-dir \
+        "Cython<3" glfw imageio cffi fasteners lockfile \
+    && ${VENV_TORCH}/bin/python -m pip install --no-cache-dir --no-deps "mujoco-py==2.1.2.14"
 
 # D4RL
 RUN ${VENV_TORCH}/bin/python -m pip install --no-cache-dir "git+https://github.com/Farama-Foundation/d4rl@master#egg=d4rl"
 
 # IQL (vendored) in JAX venv
 RUN ${VENV_JAX}/bin/python -m pip install --no-cache-dir "jax[cuda12]==0.6.2"
+RUN ${VENV_JAX}/bin/python -m pip install --no-cache-dir gym==0.23.1 mujoco
 RUN ${VENV_JAX}/bin/python -m pip install --no-cache-dir \
-    gym==0.23.1 mujoco lockfile "mujoco-py==2.1.2.14"
+        "Cython<3" glfw imageio cffi fasteners lockfile \
+    && ${VENV_JAX}/bin/python -m pip install --no-cache-dir --no-deps "mujoco-py==2.1.2.14"
 RUN ${VENV_JAX}/bin/python -m pip install --no-cache-dir "git+https://github.com/Farama-Foundation/d4rl@master#egg=d4rl"
 RUN ${VENV_JAX}/bin/python -m pip install --no-cache-dir --no-build-isolation \
     -r /workspace/nesy_rl/implicit_q_learning/requirements.txt
 
 ENV PYTHONPATH=/workspace/nesy_rl:${PYTHONPATH}
+
+RUN chown -R ${USERNAME}:${USERNAME} /opt/venv-torch /opt/venv-jax
 
 USER ${USERNAME}
 CMD ["/bin/bash"]
