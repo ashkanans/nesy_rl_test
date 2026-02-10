@@ -128,10 +128,15 @@ def main(_):
 
         if i % FLAGS.log_interval == 0:
             for k, v in update_info.items():
+                v = np.asarray(v)
                 if v.ndim == 0:
                     summary_writer.add_scalar(f'training/{k}', v, i)
                 else:
-                    summary_writer.add_histogram(f'training/{k}', v, i)
+                    try:
+                        summary_writer.add_histogram(f'training/{k}', v, i)
+                    except Exception:
+                        # Some numpy/tensorboardX combinations break histogram logging.
+                        pass
             summary_writer.flush()
 
         if i % FLAGS.eval_interval == 0:
