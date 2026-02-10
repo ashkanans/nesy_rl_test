@@ -7,14 +7,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu121
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.11 python3.11-venv python3.11-dev \
+    python3.10 python3.10-venv python3.10-dev \
     python3-pip \
     git curl ca-certificates \
     build-essential pkg-config graphviz \
     && rm -rf /var/lib/apt/lists/*
 
 # Create venv (so pip installs don't fight system python)
-RUN python3.11 -m venv /opt/venv
+RUN python3.10 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 RUN python -m pip install -U pip setuptools wheel
