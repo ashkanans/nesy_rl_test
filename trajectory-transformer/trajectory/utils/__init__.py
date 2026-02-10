@@ -6,3 +6,4 @@ from .rendering import make_renderer
 # from .video import *
 from .config import Config
 from .training import Trainer
+from .q_client import QClient
