@@ -43,7 +43,8 @@ ENV MUJOCO_PY_MUJOCO_PATH=/opt/mujoco210
 ENV LD_LIBRARY_PATH=/opt/mujoco210/bin:${LD_LIBRARY_PATH}
 
 # Preinstall mujoco-py to avoid build isolation issues
-RUN python -m pip install --no-cache-dir "mujoco-py==2.1.2.14"
+RUN python -m pip install --no-cache-dir lockfile \
+    && python -m pip install --no-cache-dir "mujoco-py==2.1.2.14"
 
 # D4RL
 RUN python -m pip install --no-cache-dir "git+https://github.com/Farama-Foundation/d4rl@master#egg=d4rl"
