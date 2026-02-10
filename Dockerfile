@@ -38,8 +38,7 @@ RUN python -m pip install --no-cache-dir mujoco
 # MuJoCo 2.1 for mujoco-py (used by D4RL/IQL)
 RUN mkdir -p /opt/mujoco210 \
     && curl -L https://github.com/deepmind/mujoco/releases/download/2.1.0/mujoco210-linux-x86_64.tar.gz \
-    | tar -xz -C /opt \
-    && mv /opt/mujoco210-linux-x86_64 /opt/mujoco210
+    | tar -xz -C /opt
 ENV MUJOCO_PY_MUJOCO_PATH=/opt/mujoco210
 ENV LD_LIBRARY_PATH=/opt/mujoco210/bin:${LD_LIBRARY_PATH}
 
