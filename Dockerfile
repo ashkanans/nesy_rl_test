@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     git curl ca-certificates \
     build-essential pkg-config graphviz \
+    patchelf libgl1-mesa-dev libosmesa6-dev libglu1-mesa \
     && rm -rf /var/lib/apt/lists/*
 
 # Create venv (so pip installs don't fight system python)
@@ -34,12 +35,23 @@ RUN python -m pip install --no-cache-dir -r requirements.txt
 # MuJoCo Python bindings (official)
 RUN python -m pip install --no-cache-dir mujoco
 
+# MuJoCo 2.1 for mujoco-py (used by D4RL/IQL)
+RUN mkdir -p /opt/mujoco210 \
+    && curl -L https://github.com/deepmind/mujoco/releases/download/2.1.0/mujoco210-linux-x86_64.tar.gz \
+    | tar -xz -C /opt \
+    && mv /opt/mujoco210-linux-x86_64 /opt/mujoco210
+ENV MUJOCO_PY_MUJOCO_PATH=/opt/mujoco210
+ENV LD_LIBRARY_PATH=/opt/mujoco210/bin:${LD_LIBRARY_PATH}
+
+# Preinstall mujoco-py to avoid build isolation issues
+RUN python -m pip install --no-cache-dir "mujoco-py==2.1.2.14"
+
 # D4RL
 RUN python -m pip install --no-cache-dir "git+https://github.com/Farama-Foundation/d4rl@master#egg=d4rl"
 
 # IQL (official JAX repo)
 RUN git clone https://github.com/ikostrikov/implicit_q_learning /opt/implicit_q_learning \
-    && python -m pip install --no-cache-dir -r /opt/implicit_q_learning/requirements.txt
+    && python -m pip install --no-cache-dir --no-build-isolation -r /opt/implicit_q_learning/requirements.txt
 
 # JAX with GPU support (match to CUDA in the base image)
 # For CUDA 12.x, JAX docs recommend jax[cuda12]
