@@ -72,7 +72,8 @@ class QServerHandler(socketserver.StreamRequestHandler):
                 if self.normalize:
                     obs = (obs - self.stats["obs_mean"]) / self.stats["obs_std"]
                     acts = (acts - self.stats["act_mean"]) / self.stats["act_std"]
-                q = np.asarray(self.q_fn(obs, acts)).reshape(-1).tolist()
+                q_fn = type(self).q_fn
+                q = np.asarray(q_fn(obs, acts)).reshape(-1).tolist()
                 resp = {"q": q}
             except Exception as e:
                 resp = {"error": str(e)}
