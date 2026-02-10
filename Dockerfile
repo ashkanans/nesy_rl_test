@@ -47,8 +47,7 @@ RUN python -m pip install --no-cache-dir lockfile \
     && python -m pip install --no-cache-dir "mujoco-py==2.1.2.14"
 
 # D4RL
-RUN python -m pip install --no-cache-dir "mujoco-py==2.1.2.14" \
-    && python -m pip install --no-cache-dir "git+https://github.com/Farama-Foundation/d4rl@master#egg=d4rl"
+RUN python -m pip install --no-cache-dir "git+https://github.com/Farama-Foundation/d4rl@master#egg=d4rl"
 
 # IQL (official JAX repo)
 RUN git clone https://github.com/ikostrikov/implicit_q_learning /opt/implicit_q_learning \
@@ -76,8 +75,8 @@ PY
 RUN python -m pip install --no-cache-dir --no-build-isolation -r /opt/implicit_q_learning/requirements.txt
 
 # JAX with GPU support (match to CUDA in the base image)
-# For CUDA 12.x, JAX docs recommend jax[cuda12]
-RUN python -m pip install --no-cache-dir "jax[cuda12]"
+# Pin to the same version IQL pulls to avoid drift.
+RUN python -m pip install --no-cache-dir "jax[cuda12]==0.6.2"
 
 ENV PYTHONPATH=/workspace/nesy_rl:${PYTHONPATH}
 
