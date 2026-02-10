@@ -26,6 +26,20 @@ RUN python3 -m pip install -U pip setuptools wheel
 COPY requirements.txt ./requirements.txt
 RUN python3 -m pip install --no-cache-dir -r requirements.txt
 
+# MuJoCo Python bindings (official)
+RUN python3 -m pip install --no-cache-dir mujoco
+
+# D4RL
+RUN python3 -m pip install --no-cache-dir "git+https://github.com/Farama-Foundation/d4rl@master#egg=d4rl"
+
+# IQL (official JAX repo)
+RUN git clone https://github.com/ikostrikov/implicit_q_learning /opt/implicit_q_learning \
+    && python3 -m pip install --no-cache-dir -r /opt/implicit_q_learning/requirements.txt
+
+# JAX with GPU support (match to CUDA in the base image)
+# For CUDA 12.x, JAX docs recommend jax[cuda12]
+RUN python3 -m pip install --no-cache-dir "jax[cuda12]"
+
 # (No COPY . .) — you’ll mount the repo at runtime
 ENV PYTHONPATH=/workspace/nesy_rl:${PYTHONPATH}
 
