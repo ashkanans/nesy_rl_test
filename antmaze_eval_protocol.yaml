@@ -1,0 +1,31 @@
+# AntMaze TT(+Q) evaluation protocol
+datasets:
+  - antmaze-umaze-v0
+  - antmaze-medium-play-v0
+  - antmaze-medium-diverse-v0
+  - antmaze-large-play-v0
+  - antmaze-large-diverse-v0
+
+# Number of evaluation episodes per seed
+eval_episodes: 100
+
+# 15 seeds for reporting mean ± standard error
+seeds:
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+  - 10
+  - 11
+  - 12
+  - 13
+  - 14
+
+# Use D4RL normalized score (env.get_normalized_score)
+score: d4rl_normalized
