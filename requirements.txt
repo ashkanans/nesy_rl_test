@@ -17,6 +17,7 @@ mypy_extensions==1.1.0
 networkx==3.4.2
 numpy==1.26.4
 pythomata==0.3.2
+scikit-video==1.1.11
 sympy==1.14.0
 torch==2.3.1+cu121
 typed-argument-parser==1.11.0
