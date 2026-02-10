@@ -141,3 +141,28 @@ ant_medium_v2 = ant_medium_replay_v2 = ant_random_v2 = {
         'horizon': 5,
     }
 }
+
+#------------------------ antmaze ------------------------#
+
+antmaze_umaze_v0 = antmaze_medium_play_v0 = antmaze_medium_diverse_v0 = \
+antmaze_large_play_v0 = antmaze_large_diverse_v0 = {
+    'train': {
+        ## discretization bins
+        'N': 100,
+        ## context length (subsampled sequence length)
+        'subsampled_sequence_length': 20,
+        ## reduce batch size for larger observation/action dims
+        'batch_size': 128,
+        ## keep defaults for full runs; override via CLI for smoke tests
+        'n_epochs_ref': 50,
+    },
+    'plan': {
+        ## replanning frequency
+        'plan_freq': 1,
+        ## planning horizon and beam width
+        'horizon': 50,
+        'beam_width': 256,
+        ## use more context for long-horizon tasks
+        'max_context_transitions': 10,
+    }
+}
