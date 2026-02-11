@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import socketserver
 from typing import Tuple
 
@@ -26,9 +27,47 @@ def _load_norm_stats(path: str) -> dict:
     }
 
 
+def _resolve_file(checkpoint_dir: str, filename: str) -> str:
+    """
+    Resolve files across common IQL layouts:
+    - <run_dir>/checkpoints/<file>
+    - <run_dir>/<file>
+    - <run_dir>/checkpoints/<file> when <run_dir> is passed
+    - <run_dir>/<file> when <run_dir>/checkpoints is passed
+    """
+    run_dir = checkpoint_dir
+    if os.path.basename(os.path.normpath(checkpoint_dir)) == "checkpoints":
+        run_dir = os.path.dirname(os.path.normpath(checkpoint_dir))
+
+    candidates = [
+        os.path.join(checkpoint_dir, filename),
+        os.path.join(run_dir, filename),
+        os.path.join(run_dir, "checkpoints", filename),
+    ]
+
+    seen = set()
+    for path in candidates:
+        norm = os.path.normpath(path)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        if os.path.isfile(norm):
+            return norm
+
+    checked = "\n  - ".join(sorted(seen))
+    raise FileNotFoundError(
+        f"Could not find '{filename}'. Checked:\n  - {checked}\n"
+        f"Pass --checkpoint_dir as either run dir or checkpoints dir."
+    )
+
+
 def _build_critic(checkpoint_dir: str) -> Tuple[Model, dict]:
-    config = _load_config(f"{checkpoint_dir}/config.json")
-    stats = _load_norm_stats(f"{checkpoint_dir}/normalization_stats.npz")
+    config_path = _resolve_file(checkpoint_dir, "config.json")
+    norm_path = _resolve_file(checkpoint_dir, "normalization_stats.npz")
+    critic_path = _resolve_file(checkpoint_dir, "critic.pkl")
+
+    config = _load_config(config_path)
+    stats = _load_norm_stats(norm_path)
 
     obs_dim = stats["obs_mean"].shape[0]
     act_dim = stats["act_mean"].shape[0]
@@ -38,7 +77,7 @@ def _build_critic(checkpoint_dir: str) -> Tuple[Model, dict]:
     dummy_obs = jnp.zeros((1, obs_dim), dtype=jnp.float32)
     dummy_act = jnp.zeros((1, act_dim), dtype=jnp.float32)
     critic = Model.create(critic_def, inputs=[jax.random.PRNGKey(0), dummy_obs, dummy_act])
-    critic = critic.load(f"{checkpoint_dir}/critic.pkl")
+    critic = critic.load(critic_path)
 
     return critic, stats
 
@@ -87,7 +126,7 @@ def main():
         "--checkpoint_dir",
         type=str,
         required=True,
-        help="Path to IQL checkpoint dir containing critic.pkl and normalization_stats.npz",
+        help="IQL run dir or checkpoints dir; server auto-resolves config and checkpoint files",
     )
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5555)
