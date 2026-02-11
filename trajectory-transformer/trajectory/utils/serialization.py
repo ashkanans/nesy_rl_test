@@ -42,7 +42,7 @@ def load_model(*loadpath, epoch=None, device='cuda:0'):
     state_path = os.path.join(loadpath, f'state_{epoch}.pt')
 
     config = pickle.load(open(config_path, 'rb'))
-    state = torch.load(state_path)
+    state = torch.load(state_path, map_location=torch.device(device))
 
     model = config()
     model.to(device)
