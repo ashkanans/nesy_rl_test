@@ -1,6 +1,7 @@
-import torch
-from pathlib import Path
 import sys
+from pathlib import Path
+
+import torch
 
 REPO_ROOT = Path(__file__).parent
 NESY_PATH = REPO_ROOT / "suffix-prediction"
@@ -44,8 +45,15 @@ class TTDFAAdapter:
     """
 
     def __init__(
-        self, observation_dim, action_dim, num_bins, include_reward=True,
-        include_value=True, constraint_dims=None, abstraction_fn=None, use_stop_token=True
+        self,
+        observation_dim,
+        action_dim,
+        num_bins,
+        include_reward=True,
+        include_value=True,
+        constraint_dims=None,
+        abstraction_fn=None,
+        use_stop_token=True,
     ):
         """
         Initialize the DFA adapter.
@@ -93,21 +101,20 @@ class TTDFAAdapter:
         if isinstance(num_bins, int):
             if num_bins <= 0:
                 raise ValueError("num_bins must be positive, got %d" % num_bins)
-        
+
             self.num_bins_per_dim = [num_bins] * total_dims
-        
+
         elif isinstance(num_bins, (list, tuple)):
             if len(num_bins) != total_dims:
                 raise ValueError(
-                    "len(num_bins) = %d, but total scalar dims = %d"
-                    % (len(num_bins), total_dims)
+                    "len(num_bins) = %d, but total scalar dims = %d" % (len(num_bins), total_dims)
                 )
-            
+
             self.num_bins_per_dim = [int(b) for b in num_bins]
-            
+
             if any(b <= 0 for b in self.num_bins_per_dim):
                 raise ValueError("All num_bins entries must be positive.")
-        
+
         else:
             raise ValueError("num_bins must be int or list/tuple of ints.")
 
@@ -185,7 +192,7 @@ class TTDFAAdapter:
             idx = len(self.symbolic_vocab)
             self.symbolic_vocab.append(symbol_name)
             self.symbol_to_idx[symbol_name] = idx
-        
+
         return self.symbol_to_idx[symbol_name]
 
     def _build_symbolic_vocab_and_mapping(self):
@@ -290,7 +297,9 @@ class TTDFAAdapter:
             return self._build_safe_dfa_from_unsafe_set(ltl_formula, formula_name)
 
         # FiniteStateMachine.DFA signature is (ltl_formula, num_symbols, name, dictionary_symbols)
-        dfa = DFA(ltl_formula, self.num_symbols, formula_name, dictionary_symbols=self.symbolic_vocab)
+        dfa = DFA(
+            ltl_formula, self.num_symbols, formula_name, dictionary_symbols=self.symbolic_vocab
+        )
 
         return dfa
 
@@ -326,7 +335,7 @@ class TTDFAAdapter:
         """
         Map a sequence of symbol strings to DFA dictionary indices.
         """
-        
+
         indices = []
 
         for symbol in symbol_seq:
@@ -377,7 +386,11 @@ class TTDFAAdapter:
             token_sequences = masked
 
         symbol_sequences = self.tokens_to_symbols(token_sequences)
-        if isinstance(symbol_sequences, list) and symbol_sequences and isinstance(symbol_sequences[0], str):
+        if (
+            isinstance(symbol_sequences, list)
+            and symbol_sequences
+            and isinstance(symbol_sequences[0], str)
+        ):
             # single sequence case: wrap in list
             symbol_sequences = [symbol_sequences]
 

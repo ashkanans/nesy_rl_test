@@ -8,6 +8,7 @@ except ImportError:
         import gym
         from gym import spaces
     except ImportError:
+
         class spaces:
             class Discrete:
                 def __init__(self, n):
@@ -19,8 +20,7 @@ except ImportError:
 
 class CBConfig:
     def __init__(
-        self, step_reward=-0.01, bomb_reward=-1.0,
-        goal_reward=1.0, max_steps=200, stochastic=False
+        self, step_reward=-0.01, bomb_reward=-1.0, goal_reward=1.0, max_steps=200, stochastic=False
     ):
         self.step_reward = step_reward
         self.bomb_reward = bomb_reward
@@ -32,8 +32,8 @@ class CBConfig:
 class ColourBombGridworldV1Env(gym.Env):
     ACTIONS = {
         0: (-1, 0),  # up
-        1: (0, 1),   # right
-        2: (1, 0),   # down
+        1: (0, 1),  # right
+        2: (1, 0),  # down
         3: (0, -1),  # left
     }
 
@@ -42,15 +42,15 @@ class ColourBombGridworldV1Env(gym.Env):
         self.cfg = config or CBConfig()
 
         self.grid = [
-            [".",   ".",   ".",   ".",   ".",   ".",   ".",   "P",  "P"],
-            ["BLU", "BLU", "#",   "#",   "#",   "#",   "#",   "P",  "P"],
-            ["BLU", "BLU", ".",   ".",   "B",   ".",   ".",   ".",  "."],
-            ["B",   ".",   "#",   "#",   ".",   ".",   ".",   ".",  "."],
-            [".",   ".",   ".",   ".",   ".",   ".",   ".",   "B",  "."],
-            [".",   ".",   ".",   ".",   ".",   "#",   ".",   "#",  "#"],
-            [".",   "#",   "#",   "#",   ".",   "#",   ".",   ".",  "."],
-            [".",   "#",   "G",   "#",   ".",   ".",   "#",   "Y",  "."],
-            [".",   ".",   "S",   ".",   ".",   ".",   "B",   "Y",  "."],
+            [".", ".", ".", ".", ".", ".", ".", "P", "P"],
+            ["BLU", "BLU", "#", "#", "#", "#", "#", "P", "P"],
+            ["BLU", "BLU", ".", ".", "B", ".", ".", ".", "."],
+            ["B", ".", "#", "#", ".", ".", ".", ".", "."],
+            [".", ".", ".", ".", ".", ".", ".", "B", "."],
+            [".", ".", ".", ".", ".", "#", ".", "#", "#"],
+            [".", "#", "#", "#", ".", "#", ".", ".", "."],
+            [".", "#", "G", "#", ".", ".", "#", "Y", "."],
+            [".", ".", "S", ".", ".", ".", "B", "Y", "."],
         ]
 
         self.n_rows = len(self.grid)
@@ -59,9 +59,7 @@ class ColourBombGridworldV1Env(gym.Env):
 
         self.start_pos = self._find_unique("S")
         self.bomb_positions = self._find_all("B")
-        self.goal_positions = (
-            self._find_all("P") + self._find_all("Y") + self._find_all("BLU")
-        )
+        self.goal_positions = self._find_all("P") + self._find_all("Y") + self._find_all("BLU")
 
         self.observation_space = spaces.Discrete(self.n_states)
         self.action_space = spaces.Discrete(len(self.ACTIONS))
@@ -71,20 +69,20 @@ class ColourBombGridworldV1Env(gym.Env):
 
     def _find_all(self, symbol):
         coords = []
-        
+
         for r in range(self.n_rows):
             for c in range(self.n_cols):
                 if self.grid[r][c] == symbol:
                     coords.append((r, c))
-        
+
         return coords
 
     def _find_unique(self, symbol):
         coords = self._find_all(symbol)
-        
+
         if len(coords) != 1:
             raise ValueError("Expected exactly one '%s', found %d" % (symbol, len(coords)))
-        
+
         return coords[0]
 
     def _pos_to_state(self, pos):
@@ -183,10 +181,10 @@ class ColourBombGridworldV1Env(gym.Env):
                         row.append("U")  # blue shown as U
             lines.append(" ".join(row))
         out = "\n".join(lines)
-        
+
         if mode == "human":
             print(out)
-        
+
         return out
 
 
@@ -206,25 +204,25 @@ def generate_random_trajectories(env, num_episodes=1000, max_steps=None):
             s = ns
             if done:
                 break
-        
+
         episodes.append(ep)
-    
+
     return episodes
 
 
 if __name__ == "__main__":
     env = ColourBombGridworldV1Env()
     obs = env.reset()
-    
+
     print("Initial state:", obs)
     print(env.render())
-    
+
     for _ in range(5):
         a = np.random.randint(4)
         obs, r, done, info = env.step(a)
-        
+
         print("\naction:", a, "reward:", r, "done:", done, "info:", info)
         print(env.render())
-        
+
         if done:
             env.reset()

@@ -2,7 +2,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from colour_bomb import ColourBombGridworldV1Env, CBConfig
+from colour_bomb import CBConfig, ColourBombGridworldV1Env
 
 
 class CBSequenceDataset(Dataset):
@@ -24,8 +24,13 @@ class CBSequenceDataset(Dataset):
     """
 
     def __init__(
-        self, num_episodes=1000, max_steps=200, sequence_length=200,
-        discount=0.99, stochastic=False, seed=0
+        self,
+        num_episodes=1000,
+        max_steps=200,
+        sequence_length=200,
+        discount=0.99,
+        stochastic=False,
+        seed=0,
     ):
         self.sequence_length = sequence_length
         self.discount = discount
@@ -42,7 +47,7 @@ class CBSequenceDataset(Dataset):
             states = []
             actions = []
             rewards = []
-            
+
             for t in range(max_steps):
                 a = rng.randint(self.env.action_space.n)
                 ns, r, done, _ = self.env.step(a)
@@ -104,7 +109,7 @@ class CBSequenceDataset(Dataset):
     def __getitem__(self, idx):
         ep_idx, start_row = self.indices[idx]
         rows = self.episodes_tokens[ep_idx]
-        seg_rows = rows[start_row:start_row + self.rows_per_seg + 1]
+        seg_rows = rows[start_row : start_row + self.rows_per_seg + 1]
         flat = seg_rows.reshape(-1)
         x = torch.from_numpy(flat[:-4].astype(np.int64))
         y = torch.from_numpy(flat[4:].astype(np.int64))

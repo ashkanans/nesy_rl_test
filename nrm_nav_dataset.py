@@ -2,7 +2,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from nrm_nav_env import NRMSafetyNavEnv, NRMSafetyNavConfig
+from nrm_nav_env import NRMSafetyNavConfig, NRMSafetyNavEnv
 
 
 class NRMSafetySequenceDataset(Dataset):
@@ -100,7 +100,7 @@ class NRMSafetySequenceDataset(Dataset):
     def __getitem__(self, idx):
         ep_idx, start_row = self.indices[idx]
         rows = self.episodes_tokens[ep_idx]
-        seg_rows = rows[start_row:start_row + self.rows_per_seg + 1]
+        seg_rows = rows[start_row : start_row + self.rows_per_seg + 1]
         flat = seg_rows.reshape(-1)
         x = torch.from_numpy(flat[:-4].astype(np.int64))
         y = torch.from_numpy(flat[4:].astype(np.int64))

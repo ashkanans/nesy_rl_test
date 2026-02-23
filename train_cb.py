@@ -1,32 +1,34 @@
 import argparse
+import json
 import os
-from pathlib import Path
 import sys
 from collections import deque
-import json
+from pathlib import Path
+
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-import matplotlib.pyplot as plt
 
 REPO_ROOT = Path(__file__).parent
 sys.path.insert(0, str(REPO_ROOT / "trajectory-transformer"))
 sys.path.insert(0, str(REPO_ROOT / "suffix-prediction"))
 
-from trajectory.models.transformers import GPT
-from dfa_adapter import TTDFAAdapter
-from logic_loss_tt import LogicLossModule
-from cb_dataset import CBSequenceDataset
-from nrm_nav_dataset import NRMSafetySequenceDataset
-from nrm_nav_env import NRMSafetyNavEnv
+import FiniteStateMachine as FSM
 from DeepAutoma import DeepDFA
 from FiniteStateMachine import DFA
-import FiniteStateMachine as FSM
+from trajectory.models.transformers import GPT
+
+from cb_dataset import CBSequenceDataset
+from dfa_adapter import TTDFAAdapter
+from logic_loss_tt import LogicLossModule
+from nrm_nav_dataset import NRMSafetySequenceDataset
+from nrm_nav_env import NRMSafetyNavEnv
 
 if torch.cuda.is_available():
-    device = 'cuda:0'
+    device = "cuda:0"
 else:
-    device = 'cpu'
+    device = "cpu"
 
 
 def build_product_dfa(dfas):
@@ -116,9 +118,7 @@ def build_adapter_and_dfa(args, dataset):
         raise ValueError("You must provide --ltl_formula or --ltl_formulas")
 
     dfas = [
-        adapter.create_dfa_from_ltl(
-            f, f"cb_constraint_{i}", use_safe_dfa=args.use_safe_dfa
-        )
+        adapter.create_dfa_from_ltl(f, f"cb_constraint_{i}", use_safe_dfa=args.use_safe_dfa)
         for i, f in enumerate(formulas)
     ]
 
@@ -173,6 +173,7 @@ def build_model(args, dataset, vocab_size):
     """
     Build a GPT model configured for the Colour Bomb dataset and adapter.
     """
+
     class Cfg:
         pass
 
@@ -199,15 +200,21 @@ def build_model(args, dataset, vocab_size):
 def build_dataset(args):
     if args.env == "cb":
         return CBSequenceDataset(
-            num_episodes=args.num_episodes, max_steps=args.max_steps,
-            sequence_length=args.block_size, discount=args.discount,
-            stochastic=args.stochastic, seed=args.seed
+            num_episodes=args.num_episodes,
+            max_steps=args.max_steps,
+            sequence_length=args.block_size,
+            discount=args.discount,
+            stochastic=args.stochastic,
+            seed=args.seed,
         )
     elif args.env == "nrm_nav":
         return NRMSafetySequenceDataset(
-            num_episodes=args.num_episodes, max_steps=args.max_steps,
-            sequence_length=args.block_size, discount=args.discount,
-            stochastic=args.stochastic, seed=args.seed,
+            num_episodes=args.num_episodes,
+            max_steps=args.max_steps,
+            sequence_length=args.block_size,
+            discount=args.discount,
+            stochastic=args.stochastic,
+            seed=args.seed,
             grid=None,
         )
     else:
@@ -225,9 +232,7 @@ def train(args, return_state=False):
         replay_dataset_episode(args, dataset)
         sys.exit(0)
 
-    loader = DataLoader(
-        dataset, batch_size=args.batch_size, shuffle=True, drop_last=True
-    )
+    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=True)
 
     adapter, deep_dfa, raw_dfa = build_adapter_and_dfa(args, dataset)
 
@@ -246,7 +251,7 @@ def train(args, return_state=False):
     logic = LogicLossModule(
         deep_dfa=deep_dfa,
         adapter=adapter,
-        mode='global',
+        mode="global",
         num_samples=args.num_samples,
         temperature=args.temperature,
         alpha=args.alpha,
@@ -266,9 +271,7 @@ def train(args, return_state=False):
 
         for batch in loader:
             batch = [b.to(device) for b in batch]
-            loss, sup_loss, logic_loss = logic.compute_loss(
-                model, batch, return_components=True
-            )
+            loss, sup_loss, logic_loss = logic.compute_loss(model, batch, return_components=True)
 
             opt.zero_grad()
             loss.backward()
@@ -310,8 +313,8 @@ def train(args, return_state=False):
                         "value_weight": args.value_weight,
                         "embd_pdrop": args.embd_pdrop,
                         "resid_pdrop": args.resid_pdrop,
-                        "attn_pdrop": args.attn_pdrop
-                    }
+                        "attn_pdrop": args.attn_pdrop,
+                    },
                 },
                 ckpt_path,
             )
@@ -324,7 +327,9 @@ def _append_end_token(tensor_batch, adapter, append_flag):
     if not append_flag:
         return tensor_batch
     end_token = adapter.num_token_ids - 1
-    end_col = torch.full((tensor_batch.shape[0], 1), end_token, device=tensor_batch.device, dtype=tensor_batch.dtype)
+    end_col = torch.full(
+        (tensor_batch.shape[0], 1), end_token, device=tensor_batch.device, dtype=tensor_batch.dtype
+    )
     return torch.cat([tensor_batch, end_col], dim=1)
 
 
@@ -391,8 +396,8 @@ def evaluate_model(model, adapter, dfa, dataset, batch_size=64, append_end_token
                 gt_unsafe = torch.zeros_like(x_states, dtype=torch.bool)
                 pred_unsafe = torch.zeros_like(preds_states, dtype=torch.bool)
                 for uid in unsafe_ids:
-                    gt_unsafe |= (x_states == uid)
-                    pred_unsafe |= (preds_states == uid)
+                    gt_unsafe |= x_states == uid
+                    pred_unsafe |= preds_states == uid
 
                 gt_unsafe_count += gt_unsafe.sum().item()
                 pred_unsafe_count += pred_unsafe.sum().item()
@@ -489,7 +494,7 @@ def rollout_nrm_nav_policy(
             for _ in range(max_steps):
                 # ensure history length does not exceed model block size
                 if history.shape[1] > model.block_size:
-                    idx = history[:, -model.block_size:]
+                    idx = history[:, -model.block_size :]
                 else:
                     idx = history
 
@@ -517,7 +522,9 @@ def rollout_nrm_nav_policy(
                 new_tokens = [a, 0, cost, int(next_obs)]
                 tokens_this_ep.extend(new_tokens)
 
-                new_tokens_tensor = torch.tensor(new_tokens, dtype=torch.long, device=device).view(1, -1)
+                new_tokens_tensor = torch.tensor(new_tokens, dtype=torch.long, device=device).view(
+                    1, -1
+                )
                 history = torch.cat([history, new_tokens_tensor], dim=1)
 
                 if done:
@@ -670,7 +677,9 @@ def analyze_dataset(args, dataset, adapter, raw_dfa):
         seg_sats = []
         for i in range(n_seg):
             x, _, _ = dataset[i]
-            x_eval = _append_end_token(x.unsqueeze(0), adapter, getattr(args, "append_end_token_to_dfa", False))
+            x_eval = _append_end_token(
+                x.unsqueeze(0), adapter, getattr(args, "append_end_token_to_dfa", False)
+            )
             sat = adapter.batch_check_dfa_sat(x_eval, dfa)
             seg_sats.append(float(sat[0].item()))
         seg_sat_results.append(
@@ -688,7 +697,9 @@ def analyze_dataset(args, dataset, adapter, raw_dfa):
             for ei in range(n_eps):
                 ep = episodes[ei]
                 flat = torch.from_numpy(ep.astype(np.int64).reshape(-1))
-                flat = _append_end_token(flat.unsqueeze(0), adapter, getattr(args, "append_end_token_to_dfa", False))
+                flat = _append_end_token(
+                    flat.unsqueeze(0), adapter, getattr(args, "append_end_token_to_dfa", False)
+                )
                 sat = adapter.batch_check_dfa_sat(flat, dfa)
                 ep_sats.append(float(sat[0].item()))
             ep_sat_results.append(
@@ -747,7 +758,9 @@ def replay_dataset_episode(args, dataset):
         total_reward += r
 
         print(f"\nStep {t}:")
-        print(f"  dataset_state_token={state_token}, action={action}, reward={r:.3f}, done={done}, info={info}")
+        print(
+            f"  dataset_state_token={state_token}, action={action}, reward={r:.3f}, done={done}, info={info}"
+        )
         if args.env == "cb":
             print(env.render(mode="ansi"))
         else:
@@ -788,9 +801,18 @@ def get_arg_parser(add_help=True):
 
     p.add_argument("--ltl_formula", type=str, default=None)
     p.add_argument("--ltl_formulas", type=str, nargs="+", default=None, help="List of LTL formulas")
-    p.add_argument("--dfa_mode", type=str, choices=["single", "product", "multi"], default="product",
-                   help="How to combine multiple formulas: single (first only), product DFA, or multi (separate DFAs with averaged loss)")
-    p.add_argument("--use_safe_dfa", action="store_true", help="Build simple safety DFA for G(!unsafe) formulas")
+    p.add_argument(
+        "--dfa_mode",
+        type=str,
+        choices=["single", "product", "multi"],
+        default="product",
+        help="How to combine multiple formulas: single (first only), product DFA, or multi (separate DFAs with averaged loss)",
+    )
+    p.add_argument(
+        "--use_safe_dfa",
+        action="store_true",
+        help="Build simple safety DFA for G(!unsafe) formulas",
+    )
     p.add_argument("--constraint_dims", type=int, nargs="+", default=[0])
 
     p.add_argument("--num_samples", type=int, default=10)

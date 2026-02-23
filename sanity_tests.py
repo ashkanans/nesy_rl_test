@@ -1,12 +1,19 @@
 import json
+import sys
+from pathlib import Path
+
 import torch
 
-from colour_bomb import ColourBombGridworldV1Env
-from cb_dataset import CBSequenceDataset
-from nrm_nav_env import NRMSafetyNavEnv
-from nrm_nav_dataset import NRMSafetySequenceDataset
-from dfa_adapter import TTDFAAdapter
+REPO_ROOT = Path(__file__).parent
+sys.path.insert(0, str(REPO_ROOT / "suffix-prediction"))
+
 from FiniteStateMachine import DFA
+
+from cb_dataset import CBSequenceDataset
+from colour_bomb import ColourBombGridworldV1Env
+from dfa_adapter import TTDFAAdapter
+from nrm_nav_dataset import NRMSafetySequenceDataset
+from nrm_nav_env import NRMSafetyNavEnv
 from train_cb import build_product_dfa
 
 
@@ -64,7 +71,11 @@ def test_adapter_and_dfa():
     dfa = DFA(transitions, acceptance, None, dictionary_symbols=adapter.symbolic_vocab)
     tokens = torch.tensor([[0]])  # first token s0_bin0
     sat = adapter.batch_check_dfa_sat(tokens, dfa)
-    return {"adapter_num_tokens": adapter.num_token_ids, "sat": sat.item(), "tokens": tokens.tolist()}
+    return {
+        "adapter_num_tokens": adapter.num_token_ids,
+        "sat": sat.item(),
+        "tokens": tokens.tolist(),
+    }
 
 
 def test_product_dfa():

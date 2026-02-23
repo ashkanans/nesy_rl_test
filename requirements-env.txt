@@ -1,0 +1,7 @@
+Farama-Notifications==0.0.4
+graphviz==0.21
+gym==0.23.1
+gym-notices==0.1.0
+gymnasium==1.2.2
+matplotlib==3.10.8
+scikit-video==1.1.11

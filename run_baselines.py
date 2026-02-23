@@ -5,12 +5,7 @@ import os
 
 import torch
 
-from train_cb import (
-    get_arg_parser,
-    train,
-    evaluate_model,
-    rollout_nrm_nav_policy,
-)
+from train_cb import evaluate_model, get_arg_parser, rollout_nrm_nav_policy, train
 
 
 def run_baseline(name, args, alpha_override=None, suffix=None):

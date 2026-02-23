@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from train_cb import build_dataset, build_adapter_and_dfa, build_model, get_arg_parser
 from logic_loss_tt import LogicLossModule
+from train_cb import build_adapter_and_dfa, build_dataset, build_model, get_arg_parser
 
 
 def split_indices(n, val_ratio=0.1, test_ratio=0.1, seed=0):
@@ -17,14 +17,18 @@ def split_indices(n, val_ratio=0.1, test_ratio=0.1, seed=0):
     n_val = int(n * val_ratio)
     n_test = int(n * test_ratio)
     val_idx = idx[:n_val]
-    test_idx = idx[n_val:n_val + n_test]
-    train_idx = idx[n_val + n_test:]
+    test_idx = idx[n_val : n_val + n_test]
+    train_idx = idx[n_val + n_test :]
     return train_idx, val_idx, test_idx
 
 
 def dataset_split(dataset, val_ratio=0.1, test_ratio=0.1, seed=0):
     train_idx, val_idx, test_idx = split_indices(len(dataset), val_ratio, test_ratio, seed)
-    return torch.utils.data.Subset(dataset, train_idx), torch.utils.data.Subset(dataset, val_idx), torch.utils.data.Subset(dataset, test_idx)
+    return (
+        torch.utils.data.Subset(dataset, train_idx),
+        torch.utils.data.Subset(dataset, val_idx),
+        torch.utils.data.Subset(dataset, test_idx),
+    )
 
 
 def eval_model(model, adapter, dfa, loader, device, mask_to_state_only=False):
@@ -41,7 +45,10 @@ def eval_model(model, adapter, dfa, loader, device, mask_to_state_only=False):
             logits, sup_loss = model(x, targets=y, mask=mask)
             preds = logits.argmax(dim=-1)
             if isinstance(dfa, (list, tuple)):
-                sats = [adapter.batch_check_dfa_sat(preds, d, mask_to_state_only=mask_to_state_only) for d in dfa]
+                sats = [
+                    adapter.batch_check_dfa_sat(preds, d, mask_to_state_only=mask_to_state_only)
+                    for d in dfa
+                ]
                 sat = torch.stack(sats, dim=0).min(dim=0).values
             else:
                 sat = adapter.batch_check_dfa_sat(preds, dfa, mask_to_state_only=mask_to_state_only)
@@ -56,23 +63,35 @@ def eval_model(model, adapter, dfa, loader, device, mask_to_state_only=False):
     avg_loss = total_loss / max(1, total_batches)
     sat_rate = total_sat / max(1, total_episodes)
     violation_rate = total_violations / max(1, total_episodes)
-    return {"supervised_loss": avg_loss, "satisfaction_rate": sat_rate, "violation_rate": violation_rate}
+    return {
+        "supervised_loss": avg_loss,
+        "satisfaction_rate": sat_rate,
+        "violation_rate": violation_rate,
+    }
 
 
 def train_model(args, device):
     dataset = build_dataset(args)
-    train_ds, val_ds, test_ds = dataset_split(dataset, val_ratio=args.val_ratio, test_ratio=args.test_ratio, seed=args.seed)
+    train_ds, val_ds, test_ds = dataset_split(
+        dataset, val_ratio=args.val_ratio, test_ratio=args.test_ratio, seed=args.seed
+    )
 
-    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, drop_last=True)
-    val_loader = torch.utils.data.DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, drop_last=False)
-    test_loader = torch.utils.data.DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, drop_last=False)
+    train_loader = torch.utils.data.DataLoader(
+        train_ds, batch_size=args.batch_size, shuffle=True, drop_last=True
+    )
+    val_loader = torch.utils.data.DataLoader(
+        val_ds, batch_size=args.batch_size, shuffle=False, drop_last=False
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_ds, batch_size=args.batch_size, shuffle=False, drop_last=False
+    )
 
     adapter, deep_dfa, raw_dfa = build_adapter_and_dfa(args, dataset)
     model = build_model(args, dataset, vocab_size=adapter.num_token_ids - 1)
     logic = LogicLossModule(
         deep_dfa=deep_dfa,
         adapter=adapter,
-        mode='global',
+        mode="global",
         num_samples=args.num_samples,
         temperature=args.temperature,
         alpha=args.alpha,
@@ -96,12 +115,25 @@ def train_model(args, device):
             n_batches += 1
 
         if (epoch + 1) % args.eval_every == 0:
-            val_metrics = eval_model(model, adapter, raw_dfa, val_loader, device, mask_to_state_only=args.mask_to_state_only)
-            print(f"epoch {epoch}: train_loss={total_loss/max(1,n_batches):.4f} val_loss={val_metrics['supervised_loss']:.4f} sat={val_metrics['satisfaction_rate']:.3f}")
+            val_metrics = eval_model(
+                model,
+                adapter,
+                raw_dfa,
+                val_loader,
+                device,
+                mask_to_state_only=args.mask_to_state_only,
+            )
+            print(
+                f"epoch {epoch}: train_loss={total_loss/max(1,n_batches):.4f} val_loss={val_metrics['supervised_loss']:.4f} sat={val_metrics['satisfaction_rate']:.3f}"
+            )
 
     # final eval
-    val_metrics = eval_model(model, adapter, raw_dfa, val_loader, device, mask_to_state_only=args.mask_to_state_only)
-    test_metrics = eval_model(model, adapter, raw_dfa, test_loader, device, mask_to_state_only=args.mask_to_state_only)
+    val_metrics = eval_model(
+        model, adapter, raw_dfa, val_loader, device, mask_to_state_only=args.mask_to_state_only
+    )
+    test_metrics = eval_model(
+        model, adapter, raw_dfa, test_loader, device, mask_to_state_only=args.mask_to_state_only
+    )
     return model, adapter, raw_dfa, val_metrics, test_metrics
 
 
@@ -112,7 +144,11 @@ def parse_eval_args():
     parser.add_argument("--test_ratio", type=float, default=0.1)
     parser.add_argument("--eval_every", type=int, default=5)
     parser.add_argument("--out_dir", type=str, default="eval_runs")
-    parser.add_argument("--mask_to_state_only", action="store_true", help="Only consider state symbols for DFA satisfaction")
+    parser.add_argument(
+        "--mask_to_state_only",
+        action="store_true",
+        help="Only consider state symbols for DFA satisfaction",
+    )
     return parser
 
 
@@ -130,17 +166,21 @@ def main():
 
     # CSV
     import csv
+
     csv_path = os.path.join(args.out_dir, "metrics.csv")
     with open(csv_path, "w", newline="") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(["split", "supervised_loss", "satisfaction_rate", "violation_rate"])
         for split in ["val", "test"]:
             m = result[split]
-            writer.writerow([split, m["supervised_loss"], m["satisfaction_rate"], m["violation_rate"]])
+            writer.writerow(
+                [split, m["supervised_loss"], m["satisfaction_rate"], m["violation_rate"]]
+            )
 
     # Simple plot of satisfaction rate
     try:
         import matplotlib.pyplot as plt
+
         splits = ["val", "test"]
         sats = [result[s]["satisfaction_rate"] for s in splits]
         plt.bar(splits, sats)

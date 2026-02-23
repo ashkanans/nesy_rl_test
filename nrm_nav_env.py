@@ -31,8 +31,8 @@ class NRMSafetyNavConfig:
 class NRMSafetyNavEnv:
     ACTIONS = {
         0: (-1, 0),  # up
-        1: (0, 1),   # right
-        2: (1, 0),   # down
+        1: (0, 1),  # right
+        2: (1, 0),  # down
         3: (0, -1),  # left
     }
 
@@ -132,8 +132,8 @@ class NRMSafetyNavEnv:
         if pos in self.goal_positions:
             labels["goal"] = True
         # near obstacle if any wall or unsafe within manhattan distance 1
-        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
-            nbr = (pos[0]+dr, pos[1]+dc)
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nbr = (pos[0] + dr, pos[1] + dc)
             if nbr in self.wall_positions or nbr in self.unsafe_positions:
                 labels["near_obstacle"] = True
                 break

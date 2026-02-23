@@ -1,7 +1,8 @@
+import sys
+from pathlib import Path
+
 import torch
 import torch.nn.functional as F
-from pathlib import Path
-import sys
 
 REPO_ROOT = Path(__file__).parent
 sys.path.insert(0, str(REPO_ROOT / "suffix-prediction"))
@@ -42,10 +43,16 @@ class LogicLossModule:
     """
 
     def __init__(
-        self, deep_dfa, adapter, mode="global",
-        num_samples=10, temperature=0.5, alpha=0.4,
+        self,
+        deep_dfa,
+        adapter,
+        mode="global",
+        num_samples=10,
+        temperature=0.5,
+        alpha=0.4,
         append_end_symbol=False,
-        eps=1e-10, clamp_acceptance=True
+        eps=1e-10,
+        clamp_acceptance=True,
     ):
         """
         Initialize the logic loss module.
@@ -122,8 +129,15 @@ class LogicLossModule:
         return samples, log_probs
 
     def global_logic_loss_tt(
-        self, model, batch, deep_dfa, adapter, num_samples=10,
-        temperature=0.5, alpha=0.4, return_components=False
+        self,
+        model,
+        batch,
+        deep_dfa,
+        adapter,
+        num_samples=10,
+        temperature=0.5,
+        alpha=0.4,
+        return_components=False,
     ):
         """
         Compute global logic loss (and combine it with supervised loss) for a batch.
@@ -209,7 +223,9 @@ class LogicLossModule:
         acceptance = dfa_final[:, 1]
         acceptance = acceptance.view(batch_size, num_samples)
 
-        log_probs_exp = log_probs.unsqueeze(1).expand(batch_size, num_samples, seq_len, num_token_ids)
+        log_probs_exp = log_probs.unsqueeze(1).expand(
+            batch_size, num_samples, seq_len, num_token_ids
+        )
         log_prob_traces = (samples * log_probs_exp).sum(dim=-1).sum(dim=-1)
 
         weights = F.softmax(log_prob_traces, dim=-1)
@@ -235,7 +251,9 @@ class LogicLossModule:
 
         Not implemented. Use mode='global' instead.
         """
-        raise NotImplementedError("Local logic loss for TT is not implemented yet. Use mode='global'.")
+        raise NotImplementedError(
+            "Local logic loss for TT is not implemented yet. Use mode='global'."
+        )
 
     def compute_loss(self, model, batch, return_components=False):
         """
@@ -264,7 +282,10 @@ class LogicLossModule:
                 logic_losses = []
                 for dfa_inst in self.deep_dfa:
                     tl, sl, ll = self.global_logic_loss_tt(
-                        model, batch, dfa_inst, self.adapter,
+                        model,
+                        batch,
+                        dfa_inst,
+                        self.adapter,
                         num_samples=self.num_samples,
                         temperature=self.temperature,
                         alpha=self.alpha,
@@ -281,8 +302,14 @@ class LogicLossModule:
                 return total_loss
             else:
                 return self.global_logic_loss_tt(
-                    model, batch, self.deep_dfa, self.adapter, num_samples=self.num_samples,
-                    temperature=self.temperature, alpha=self.alpha, return_components=return_components
+                    model,
+                    batch,
+                    self.deep_dfa,
+                    self.adapter,
+                    num_samples=self.num_samples,
+                    temperature=self.temperature,
+                    alpha=self.alpha,
+                    return_components=return_components,
                 )
         elif self.mode == "local":
             return self.local_logic_loss_tt()

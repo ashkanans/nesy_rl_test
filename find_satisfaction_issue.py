@@ -6,13 +6,15 @@ Checks:
  - DFA symbols and transitions coverage for dataset tokens
  - satisfaction on ground-truth tokens (with/without masking)
 """
+
 import argparse
 import json
+
 import numpy as np
 import torch
 
-from train_cb import build_dataset, build_adapter_and_dfa
 from dfa_adapter import TTDFAAdapter
+from train_cb import build_adapter_and_dfa, build_dataset
 
 
 def pos_token_stats(ds, transition_dim, sample_limit=100):
@@ -45,7 +47,9 @@ def satisfaction_on_dataset(ds, adapter, dfa, mask_to_state_only=False, sample_l
     sats = []
     for i in range(n):
         x, _, _ = ds[i]
-        sat = adapter.batch_check_dfa_sat(x.unsqueeze(0), dfa, mask_to_state_only=mask_to_state_only)
+        sat = adapter.batch_check_dfa_sat(
+            x.unsqueeze(0), dfa, mask_to_state_only=mask_to_state_only
+        )
         sats.append(float(sat[0].item()))
     sats = np.array(sats)
     return {"mean_sat": float(sats.mean()) if len(sats) else None, "num_samples": n}
@@ -55,7 +59,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--env", type=str, default="nrm_nav")
     ap.add_argument("--ltl_formulas", nargs="+", required=True)
-    ap.add_argument("--dfa_mode", type=str, choices=["single", "product", "multi"], default="product")
+    ap.add_argument(
+        "--dfa_mode", type=str, choices=["single", "product", "multi"], default="product"
+    )
     ap.add_argument("--num_episodes", type=int, default=200)
     ap.add_argument("--max_steps", type=int, default=50)
     ap.add_argument("--block_size", type=int, default=64)
@@ -65,6 +71,7 @@ def main():
     # build dataset/adapter/dfa
     class Dummy:
         pass
+
     dummy = Dummy()
     dummy.env = args.env
     dummy.num_episodes = args.num_episodes
@@ -89,8 +96,12 @@ def main():
     report["transition_dim"] = int(adapter.transition_dim)
     report["pos_token_stats"] = pos_token_stats(ds, adapter.transition_dim)
     report["dfa_symbol_coverage"] = [dfa_symbol_coverage(adapter, d) for d in target_dfas]
-    report["satisfaction_unmasked"] = [satisfaction_on_dataset(ds, adapter, d, mask_to_state_only=False) for d in target_dfas]
-    report["satisfaction_masked_state_only"] = [satisfaction_on_dataset(ds, adapter, d, mask_to_state_only=True) for d in target_dfas]
+    report["satisfaction_unmasked"] = [
+        satisfaction_on_dataset(ds, adapter, d, mask_to_state_only=False) for d in target_dfas
+    ]
+    report["satisfaction_masked_state_only"] = [
+        satisfaction_on_dataset(ds, adapter, d, mask_to_state_only=True) for d in target_dfas
+    ]
     # unsafe coverage if env is nrm_nav
     if args.env == "nrm_nav":
         unsafe_ids = {11, 18}
@@ -98,15 +109,15 @@ def main():
         total = 0
         for i in range(min(len(ds), 200)):
             x, _, _ = ds[i]
-            vals = x[0::adapter.transition_dim]  # state positions
+            vals = x[0 :: adapter.transition_dim]  # state positions
             hits += sum(int(v.item()) in unsafe_ids for v in vals)
             total += len(vals)
         report["unsafe_rate_states"] = hits / total if total else None
 
     def _default(o):
-        if isinstance(o, (np.integer, )):
+        if isinstance(o, (np.integer,)):
             return int(o)
-        if isinstance(o, (np.floating, )):
+        if isinstance(o, (np.floating,)):
             return float(o)
         return str(o)
 

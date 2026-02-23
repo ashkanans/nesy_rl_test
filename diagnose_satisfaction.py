@@ -1,8 +1,9 @@
 import argparse
+
 import numpy as np
 import torch
 
-from train_cb import build_dataset, build_adapter_and_dfa
+from train_cb import build_adapter_and_dfa, build_dataset
 
 
 def describe_dataset(ds):
@@ -46,7 +47,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", type=str, choices=["cb", "nrm_nav"], default="nrm_nav")
     parser.add_argument("--ltl_formulas", type=str, nargs="+", required=True)
-    parser.add_argument("--dfa_mode", type=str, choices=["single", "product", "multi"], default="product")
+    parser.add_argument(
+        "--dfa_mode", type=str, choices=["single", "product", "multi"], default="product"
+    )
     parser.add_argument("--num_episodes", type=int, default=200)
     parser.add_argument("--max_steps", type=int, default=50)
     parser.add_argument("--sequence_length", type=int, default=64)
@@ -57,6 +60,7 @@ def main():
     # build dataset
     class DummyArgs:
         pass
+
     dummy = DummyArgs()
     dummy.env = args.env
     dummy.num_episodes = args.num_episodes
@@ -99,6 +103,7 @@ def main():
         report["unsafe"] = unsafe_fraction(ds, unsafe_ids)
 
     import json
+
     print(json.dumps(report, indent=2))
 
 
