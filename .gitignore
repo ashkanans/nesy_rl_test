@@ -63,3 +63,19 @@ Pipfile.lock
 cb_runs/
 simpleDFAs/
 symbolicDFAs/
+
+# LaTeX paper template: keep only source essentials
+paper/history.txt
+paper/readme.txt
+paper/llncsdoc.pdf
+paper/fig1.eps
+paper/*.aux
+paper/*.bbl
+paper/*.blg
+paper/*.fdb_latexmk
+paper/*.fls
+paper/*.log
+paper/*.out
+paper/*.pdf
+paper/*.synctex.gz
+paper/*.toc
