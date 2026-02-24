@@ -18,6 +18,7 @@ from planning.dt_runtime import (
     DTRolloutConfig,
     apply_smoke_mode_dt,
     build_dt_offline_source,
+    build_knn_suffix_memory,
     compute_default_rtg_target,
     dt_metrics_template,
     evaluate_dt_policy,
@@ -66,9 +67,9 @@ def parse_eval_args():
     parser.add_argument(
         "--dt_mode",
         type=str,
-        choices=["greedy", "constrained"],
+        choices=["greedy", "constrained", "knn"],
         default="greedy",
-        help="DT inference mode: vanilla greedy or DFA-constrained lookahead.",
+        help="DT inference mode: greedy, constrained lookahead, or offline kNN suffix planning.",
     )
     parser.add_argument(
         "--num_action_candidates",
@@ -112,6 +113,9 @@ def parse_eval_args():
         default="topk",
         help="Candidate selection strategy in constrained mode.",
     )
+    parser.add_argument("--knn_k", type=int, default=16)
+    parser.add_argument("--knn_return_weight", type=float, default=1.0)
+    parser.add_argument("--knn_satisfaction_weight", type=float, default=2.0)
     parser.set_defaults(eval_num_episodes=100, no_eval_after_train=True, hard_prune_reject_sink=True)
     return parser
 
@@ -227,7 +231,13 @@ def main():
         hard_prune_reject_sink=bool(args.hard_prune_reject_sink and not args.no_hard_prune_reject_sink),
         sat_rerank_weight=float(args.sat_rerank_weight),
         candidate_sampling=args.candidate_sampling,
+        knn_k=int(args.knn_k),
+        knn_return_weight=float(args.knn_return_weight),
+        knn_satisfaction_weight=float(args.knn_satisfaction_weight),
     )
+    knn_memory = None
+    if args.dt_mode == "knn":
+        knn_memory = build_knn_suffix_memory(base_dataset, env_name=args.env)
     policy_metrics = evaluate_dt_policy(
         model=model,
         env=base_dataset.env,
@@ -242,6 +252,7 @@ def main():
         spec_name=spec_name,
         return_rollout_stats=True,
         constrained_cfg=constrained_cfg,
+        knn_memory=knn_memory,
     )
     policy_metrics, rollout_stats = policy_metrics
     random_metrics = evaluate_random_policy(

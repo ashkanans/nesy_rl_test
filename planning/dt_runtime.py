@@ -31,6 +31,9 @@ class DTConstrainedConfig:
     hard_prune_reject_sink: bool = True
     sat_rerank_weight: float = 2.0
     candidate_sampling: str = "topk"
+    knn_k: int = 16
+    knn_return_weight: float = 1.0
+    knn_satisfaction_weight: float = 2.0
 
 
 def apply_smoke_mode_dt(args):
@@ -58,6 +61,8 @@ def apply_smoke_mode_dt(args):
         args.num_action_candidates = min(int(args.num_action_candidates), 4)
     if hasattr(args, "lookahead_horizon"):
         args.lookahead_horizon = min(int(args.lookahead_horizon), 2)
+    if hasattr(args, "knn_k"):
+        args.knn_k = min(int(args.knn_k), 16)
     if getattr(args, "env", None) == "frozenlake" and hasattr(args, "policy_mix"):
         # Ensure smoke dataset has some successful trajectories for a non-degenerate DT signal.
         args.policy_mix = max(float(args.policy_mix), 1.0)
@@ -220,6 +225,58 @@ def compute_dt_logic_rollout_penalty(
         penalty = penalty + (hazard_prob * valid).sum() / valid_count
 
     return penalty / float(rollout_horizon)
+
+
+def build_knn_suffix_memory(base_dataset, env_name: str):
+    """
+    Build state-indexed suffix candidates for kNN continuation scoring.
+    """
+    env = base_dataset.env
+    state_to_entries: dict[int, list[dict[str, float | int]]] = {}
+    episodes = getattr(base_dataset, "episodes_tokens", [])
+    rewards_all = getattr(base_dataset, "episode_rewards", None)
+
+    for ep_idx, ep in enumerate(episodes):
+        if ep.shape[0] < 2:
+            continue
+        rows = ep[:-1]
+        T = rows.shape[0]
+        rewards = None
+        if rewards_all is not None and ep_idx < len(rewards_all):
+            rewards = np.asarray(rewards_all[ep_idx], dtype=np.float32).reshape(-1)
+            if len(rewards) != T:
+                rewards = None
+        if rewards is None:
+            rewards = np.zeros(T, dtype=np.float32)
+
+        ret_suffix = np.cumsum(rewards[::-1])[::-1]
+        if env_name in {"frozenlake", "nrm_nav"} and rows.shape[1] > 3:
+            hazard_now = rows[:, 3] > 0
+        elif env_name == "cb":
+            hazard_now = rewards <= float(getattr(env.cfg, "step_reward", -0.01) - 0.5)
+        else:
+            hazard_now = np.zeros(T, dtype=bool)
+        hazard_suffix = np.zeros(T, dtype=bool)
+        running_hazard = False
+        for t in range(T - 1, -1, -1):
+            running_hazard = bool(running_hazard or bool(hazard_now[t]))
+            hazard_suffix[t] = running_hazard
+
+        for t in range(T):
+            s = int(rows[t, 0])
+            a = int(rows[t, 1])
+            entry = {
+                "action": a,
+                "return_proxy": float(ret_suffix[t]),
+                "satisfaction_proxy": float(0.0 if hazard_suffix[t] else 1.0),
+            }
+            state_to_entries.setdefault(s, []).append(entry)
+
+    known_states = sorted(state_to_entries.keys())
+    return {
+        "state_to_entries": state_to_entries,
+        "known_states": known_states,
+    }
 
 
 def compute_default_rtg_target(base_dataset, quantile: float = 0.75) -> float:
@@ -450,6 +507,7 @@ def _select_dt_action(
     raw_dfa,
     dfa_state,
     reject_checker,
+    knn_memory=None,
 ):
     log_probs = _predict_action_log_probs(
         model=model,
@@ -462,7 +520,50 @@ def _select_dt_action(
     greedy_action = int(torch.argmax(log_probs).item())
     mode = constrained_cfg.dt_mode
     if mode != "constrained":
-        return greedy_action, {"mode": "greedy", "fallback": False, "pruned": 0}
+        if mode != "knn":
+            return greedy_action, {"mode": "greedy", "fallback": False, "pruned": 0}
+        if knn_memory is None:
+            return greedy_action, {
+                "mode": "knn",
+                "fallback": True,
+                "fallback_reason": "missing_knn_memory",
+                "pruned": 0,
+            }
+        state_to_entries = knn_memory["state_to_entries"]
+        known_states = knn_memory["known_states"]
+        candidates = list(state_to_entries.get(int(obs), []))
+        if not candidates:
+            for st in sorted(known_states, key=lambda s: abs(int(s) - int(obs))):
+                candidates.extend(state_to_entries.get(int(st), []))
+                if len(candidates) >= int(constrained_cfg.knn_k):
+                    break
+        if not candidates:
+            return greedy_action, {
+                "mode": "knn",
+                "fallback": True,
+                "fallback_reason": "empty_knn_candidates",
+                "pruned": 0,
+            }
+        k = min(max(1, int(constrained_cfg.knn_k)), len(candidates))
+        scored = []
+        for entry in candidates:
+            score = (
+                float(constrained_cfg.knn_return_weight) * float(entry["return_proxy"])
+                + float(constrained_cfg.knn_satisfaction_weight) * float(entry["satisfaction_proxy"])
+            )
+            scored.append((score, int(entry["action"])))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        topk = scored[:k]
+        by_action: dict[int, float] = {}
+        for score, action in topk:
+            by_action[action] = max(score, by_action.get(action, -1e18))
+        action = max(by_action.items(), key=lambda kv: kv[1])[0]
+        return int(action), {
+            "mode": "knn",
+            "fallback": False,
+            "pruned": 0,
+            "candidates": int(len(candidates)),
+        }
     if constrained_cfg.lookahead_backend != "env":
         return greedy_action, {
             "mode": "greedy",
@@ -617,6 +718,7 @@ def evaluate_dt_policy(
     spec_name: str | None = None,
     return_rollout_stats: bool = False,
     constrained_cfg: DTConstrainedConfig | None = None,
+    knn_memory=None,
 ) -> dict[str, Any] | tuple[dict[str, Any], dict[str, Any]]:
     model.eval()
     returns = []
@@ -703,6 +805,7 @@ def evaluate_dt_policy(
                 raw_dfa=raw_dfa,
                 dfa_state=dfa_state,
                 reject_checker=reject_checker,
+                knn_memory=knn_memory,
             )
             if decode_info.get("fallback"):
                 fallback_decodes += 1
@@ -810,9 +913,13 @@ def evaluate_dt_policy(
         "spec": spec_name,
         "decoding_mode": constrained_cfg.dt_mode,
         "beam_width": int(
-            constrained_cfg.num_action_candidates
-            if constrained_cfg.dt_mode == "constrained"
-            else 1
+            constrained_cfg.knn_k
+            if constrained_cfg.dt_mode == "knn"
+            else (
+                constrained_cfg.num_action_candidates
+                if constrained_cfg.dt_mode == "constrained"
+                else 1
+            )
         ),
         "model_type": "dt",
         "checkpoint_path": checkpoint_path,
@@ -832,14 +939,21 @@ def evaluate_dt_policy(
         "fallback_reason_counts": fallback_reason_counts,
         "decoding_mode": constrained_cfg.dt_mode,
         "beam_width": int(
-            constrained_cfg.num_action_candidates
-            if constrained_cfg.dt_mode == "constrained"
-            else 1
+            constrained_cfg.knn_k
+            if constrained_cfg.dt_mode == "knn"
+            else (
+                constrained_cfg.num_action_candidates
+                if constrained_cfg.dt_mode == "constrained"
+                else 1
+            )
         ),
         "lookahead_horizon": int(constrained_cfg.lookahead_horizon),
         "lookahead_backend": constrained_cfg.lookahead_backend,
         "hard_prune_reject_sink": bool(constrained_cfg.hard_prune_reject_sink),
         "sat_rerank_weight": float(constrained_cfg.sat_rerank_weight),
+        "knn_k": int(constrained_cfg.knn_k),
+        "knn_return_weight": float(constrained_cfg.knn_return_weight),
+        "knn_satisfaction_weight": float(constrained_cfg.knn_satisfaction_weight),
         "episode_returns": [float(x) for x in returns],
         "episode_lengths": lengths,
         "episode_satisfaction": episode_sats,
