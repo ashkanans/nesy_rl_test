@@ -404,8 +404,17 @@ class TTDFAAdapter:
             batch[i, : seq.shape[0], :] = seq
             lengths.append(seq.shape[0])
 
-        deep_dfa = deep_dfa.to(symbol_probs.device)
-        _, dfa_rew_seq = deep_dfa.forward_pi(batch.to(symbol_probs.device))
+        # DeepDFA keeps transition tensors as plain attributes (not parameters/buffers),
+        # so module.to(...) does not guarantee they move devices. Run on DeepDFA's
+        # actual tensor device and move outputs back to symbol_probs.device.
+        deep_device = symbol_probs.device
+        if hasattr(deep_dfa, "trans_prob") and isinstance(deep_dfa.trans_prob, torch.Tensor):
+            deep_device = deep_dfa.trans_prob.device
+        elif hasattr(deep_dfa, "fin_matrix") and isinstance(deep_dfa.fin_matrix, torch.Tensor):
+            deep_device = deep_dfa.fin_matrix.device
+
+        _, dfa_rew_seq = deep_dfa.forward_pi(batch.to(deep_device))
+        dfa_rew_seq = dfa_rew_seq.to(symbol_probs.device)
         accept_probs = symbol_probs.new_zeros(symbol_probs.shape[0])
         for i in range(symbol_probs.shape[0]):
             if not valid[i]:
