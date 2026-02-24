@@ -57,6 +57,7 @@ class CBSequenceDataset(Dataset):
         rng = np.random.RandomState(seed)
 
         episodes_tokens = []
+        episode_rewards = []
 
         for _ in range(num_episodes):
             s, _ = self.env.reset()
@@ -101,6 +102,7 @@ class CBSequenceDataset(Dataset):
             )
 
             episodes_tokens.append(tokens)
+            episode_rewards.append(np.asarray(rewards, dtype=np.float32))
 
         indices = []
         self.rows_per_seg = max(1, sequence_length // 4)
@@ -116,6 +118,7 @@ class CBSequenceDataset(Dataset):
                 indices.append((ep_idx, start_row))
 
         self.episodes_tokens = episodes_tokens
+        self.episode_rewards = episode_rewards
         self.indices = indices
 
         self.observation_dim = 1

@@ -38,10 +38,12 @@ class FrozenLakeConfig:
 
 
 class FrozenLakeEnv:
-    ACTION_UP = 0
-    ACTION_RIGHT = 1
-    ACTION_DOWN = 2
-    ACTION_LEFT = 3
+    # Keep action IDs aligned with Gym/Gymnasium FrozenLake-v1:
+    # 0=LEFT, 1=DOWN, 2=RIGHT, 3=UP
+    ACTION_LEFT = 0
+    ACTION_DOWN = 1
+    ACTION_RIGHT = 2
+    ACTION_UP = 3
 
     def __init__(self, config: FrozenLakeConfig | None = None):
         self.cfg = config or FrozenLakeConfig()

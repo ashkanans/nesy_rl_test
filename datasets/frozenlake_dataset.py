@@ -62,9 +62,11 @@ class FrozenLakeSequenceDataset(Dataset):
         rng = np.random.RandomState(int(seed))
 
         self.episodes_tokens = []
+        self.episode_rewards = []
         for ep in range(int(num_episodes)):
             obs, _ = self.env.reset(seed=int(seed) + ep)
             rows = []
+            rewards = []
 
             use_scripted = (
                 self.policy_mix > 0.0
@@ -78,7 +80,7 @@ class FrozenLakeSequenceDataset(Dataset):
                 else:
                     action = int(rng.randint(self.env.action_space.n))
 
-                next_obs, _, done, info = self.env.step(action)
+                next_obs, reward, done, info = self.env.step(action)
                 cost = 1 if info.get("terminal_type") == "H" else 0
                 rows.append(
                     make_transition_row(
@@ -89,6 +91,7 @@ class FrozenLakeSequenceDataset(Dataset):
                         safety_cost=int(cost),
                     )
                 )
+                rewards.append(float(reward))
                 obs = next_obs
                 if done:
                     break
@@ -107,6 +110,7 @@ class FrozenLakeSequenceDataset(Dataset):
                 action_space_n=self.env.action_space.n,
             )
             self.episodes_tokens.append(tokens)
+            self.episode_rewards.append(np.asarray(rewards, dtype=np.float32))
 
         self.rows_per_seg = max(1, self.sequence_length // 4)
         self.indices = []

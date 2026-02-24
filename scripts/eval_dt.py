@@ -1,0 +1,181 @@
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import time
+from pathlib import Path
+
+import torch
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from models.dt_model import DecisionTransformerDiscrete
+from planning.dt_runtime import (
+    DTRolloutConfig,
+    apply_smoke_mode_dt,
+    build_dt_offline_source,
+    compute_default_rtg_target,
+    dt_metrics_template,
+    evaluate_dt_policy,
+    evaluate_random_policy,
+    write_metrics_files,
+    write_skip_metrics,
+)
+from planning.eval_runtime import ensure_run_dir, set_global_seed, write_json
+from scripts.train_dt import get_arg_parser as get_train_dt_arg_parser
+from scripts.train_dt import train as train_dt
+
+
+def parse_eval_args():
+    parent = get_train_dt_arg_parser(add_help=False)
+    parser = argparse.ArgumentParser(parents=[parent], description="Evaluate DT checkpoint.")
+    parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument(
+        "--allow_train_fallback",
+        action="store_true",
+        help="If checkpoint is missing, run a train+eval fallback (non-strict evaluation mode).",
+    )
+    parser.set_defaults(eval_num_episodes=100, no_eval_after_train=True)
+    return parser
+
+
+def _load_dt_model(checkpoint_path, device):
+    payload = torch.load(checkpoint_path, map_location=device)
+    if "model_state_dict" not in payload:
+        raise ValueError("Checkpoint missing model_state_dict")
+    cfg = payload.get("config", {})
+    required = ["num_states", "num_actions", "context_len", "n_layer", "n_head", "n_embd", "dropout"]
+    missing = [k for k in required if k not in cfg]
+    if missing:
+        raise ValueError(f"Checkpoint config missing keys: {missing}")
+
+    model = DecisionTransformerDiscrete(
+        num_states=int(cfg["num_states"]),
+        num_actions=int(cfg["num_actions"]),
+        context_len=int(cfg["context_len"]),
+        n_embd=int(cfg["n_embd"]),
+        n_layer=int(cfg["n_layer"]),
+        n_head=int(cfg["n_head"]),
+        dropout=float(cfg["dropout"]),
+        max_timestep=int(cfg.get("max_timestep", 4096)),
+    ).to(device)
+    model.load_state_dict(payload["model_state_dict"], strict=True)
+    return model, cfg
+
+
+def main():
+    parser = parse_eval_args()
+    args = parser.parse_args()
+    args = apply_smoke_mode_dt(args)
+    set_global_seed(args.seed)
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    run_dir, run_id, ts = ensure_run_dir(args.env, run_dir=args.run_dir, base_dir=args.base_runs_dir)
+
+    t0 = time.time()
+    base_dataset, skip_reason = build_dt_offline_source(args)
+    if skip_reason is not None:
+        write_skip_metrics(
+            run_dir=run_dir,
+            env=args.env,
+            seed=args.seed,
+            rtg_target=1.0 if args.rtg_target is None else float(args.rtg_target),
+            run_id=run_id,
+            ts=ts,
+            reason=skip_reason,
+        )
+        print(f"DT eval skipped: {skip_reason}")
+        return
+
+    if args.checkpoint is not None and os.path.exists(args.checkpoint):
+        model, ckpt_cfg = _load_dt_model(args.checkpoint, device=device)
+        context_len = int(ckpt_cfg.get("context_len", args.context_len))
+        rtg_target = (
+            float(args.rtg_target)
+            if args.rtg_target is not None
+            else float(ckpt_cfg.get("rtg_target", compute_default_rtg_target(base_dataset)))
+        )
+        if args.env == "frozenlake":
+            rtg_target = max(1.0, float(rtg_target))
+        checkpoint_path = args.checkpoint
+    else:
+        if not args.allow_train_fallback:
+            raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
+        model, _, train_run_dir = train_dt(args)
+        if model is None:
+            return
+        context_len = int(args.context_len)
+        rtg_target = (
+            float(args.rtg_target)
+            if args.rtg_target is not None
+            else compute_default_rtg_target(base_dataset)
+        )
+        if args.env == "frozenlake":
+            rtg_target = max(1.0, float(rtg_target))
+        checkpoint_path = os.path.join(train_run_dir, f"dt_state_{max(0, args.epochs - 1)}.pt")
+
+    rollout_cfg = DTRolloutConfig(
+        eval_num_episodes=args.eval_num_episodes,
+        eval_max_steps=args.eval_max_steps,
+        rtg_target=rtg_target,
+    )
+    policy_metrics = evaluate_dt_policy(
+        model=model,
+        env=base_dataset.env,
+        env_name=args.env,
+        seed=args.seed,
+        cfg=rollout_cfg,
+        context_len=context_len,
+        device=device,
+    )
+    random_metrics = evaluate_random_policy(
+        env=base_dataset.env,
+        env_name=args.env,
+        seed=args.seed + 10_000,
+        eval_num_episodes=args.eval_num_episodes,
+        eval_max_steps=args.eval_max_steps,
+    )
+
+    metrics = dt_metrics_template(
+        env=args.env,
+        seed=args.seed,
+        rtg_target=rtg_target,
+        runtime_sec=time.time() - t0,
+        run_id=run_id,
+        ts=ts,
+        checkpoint_path=checkpoint_path,
+    )
+    metrics.update(policy_metrics)
+    metrics["success_rate"] = metrics.get("goal_rate")
+    metrics["context_len"] = int(context_len)
+    if args.env == "cb":
+        metrics["bomb_hit_rate"] = metrics.get("hazard_hit_rate")
+
+    metrics["random_return_mean"] = random_metrics.get("return_mean")
+    metrics["random_goal_rate"] = random_metrics.get("goal_rate")
+    metrics["random_violation_rate"] = random_metrics.get("violation_rate")
+    metrics["better_than_random"] = bool(
+        (metrics.get("goal_rate") is not None)
+        and (random_metrics.get("goal_rate") is not None)
+        and (float(metrics["goal_rate"]) > float(random_metrics["goal_rate"]))
+    )
+
+    write_metrics_files(run_dir, metrics)
+    write_json(
+        os.path.join(run_dir, "dt_eval_summary.json"),
+        {
+            "policy_metrics": policy_metrics,
+            "random_baseline_metrics": random_metrics,
+            "acceptance_check": {
+                "goal_rate_strictly_better_than_random": metrics["better_than_random"],
+                "eval_num_episodes": int(args.eval_num_episodes),
+            },
+        },
+    )
+    print(f"Saved DT evaluation artifacts to {run_dir}")
+
+
+if __name__ == "__main__":
+    main()
