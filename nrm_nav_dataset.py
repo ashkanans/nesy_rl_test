@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from dfa_adapter import TTDFAAdapter
 from nrm_nav_env import NRMSafetyNavConfig, NRMSafetyNavEnv
 
 
@@ -26,6 +27,10 @@ class NRMSafetySequenceDataset(Dataset):
 
         cfg = NRMSafetyNavConfig(max_steps=max_steps, stochastic=stochastic, grid=grid)
         self.env = NRMSafetyNavEnv(cfg)
+        self.num_bins_per_dim = TTDFAAdapter.get_num_bins_per_dim_for_env(
+            "nrm_nav", self.env.observation_space.n, self.env.action_space.n
+        )
+        self.end_token_id = TTDFAAdapter.get_end_token_id_from_num_bins(self.num_bins_per_dim)
 
         rng = np.random.RandomState(seed)
 
@@ -66,10 +71,9 @@ class NRMSafetySequenceDataset(Dataset):
                 tokens[t, 2] = 0  # reward placeholder
                 tokens[t, 3] = costs[t]  # cost signal
 
-            # append an end/stop transition
-            max_bin = max(self.env.observation_space.n, self.env.action_space.n, 2)
-            end_token = max_bin  # aligns with adapter.num_token_ids - 1
-            end_row = np.array([end_token] * 4, dtype=np.int64)
+            # append exactly one explicit END marker at trace level
+            # (state position only; other dims are neutral fillers)
+            end_row = np.array([self.end_token_id, 0, 0, 0], dtype=np.int64)
             tokens = np.vstack([tokens, end_row])
 
             episodes_tokens.append(tokens)

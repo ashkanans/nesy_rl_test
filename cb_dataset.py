@@ -3,6 +3,7 @@ import torch
 from torch.utils.data import Dataset
 
 from colour_bomb import CBConfig, ColourBombGridworldV1Env
+from dfa_adapter import TTDFAAdapter
 
 
 class CBSequenceDataset(Dataset):
@@ -37,6 +38,10 @@ class CBSequenceDataset(Dataset):
 
         cfg = CBConfig(max_steps=max_steps, stochastic=stochastic)
         self.env = ColourBombGridworldV1Env(cfg)
+        self.num_bins_per_dim = TTDFAAdapter.get_num_bins_per_dim_for_env(
+            "cb", self.env.observation_space.n, self.env.action_space.n
+        )
+        self.end_token_id = TTDFAAdapter.get_end_token_id_from_num_bins(self.num_bins_per_dim)
 
         rng = np.random.RandomState(seed)
 
@@ -75,10 +80,9 @@ class CBSequenceDataset(Dataset):
                 tokens[t, 2] = 0
                 tokens[t, 3] = 0
 
-            # append an end/stop transition so DFAs can observe episode termination
-            max_bin = max(self.env.observation_space.n, self.env.action_space.n, 1)
-            end_token = max_bin  # aligns with adapter.num_token_ids - 1
-            end_row = np.array([end_token] * 4, dtype=np.int64)
+            # append exactly one explicit END marker at trace level
+            # (state position only; other dims are neutral fillers)
+            end_row = np.array([self.end_token_id, 0, 0, 0], dtype=np.int64)
             tokens = np.vstack([tokens, end_row])
 
             episodes_tokens.append(tokens)

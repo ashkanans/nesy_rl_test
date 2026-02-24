@@ -12,7 +12,7 @@ from dfa_adapter import TTDFAAdapter
 from train_cb import build_product_dfa
 
 
-def test_adapter_manual_dfa_accepts_expected_token():
+def _build_manual_test_dfa():
     adapter = TTDFAAdapter(
         observation_dim=1,
         action_dim=1,
@@ -22,18 +22,45 @@ def test_adapter_manual_dfa_accepts_expected_token():
         use_stop_token=True,
     )
 
+    end_idx = adapter.symbolic_vocab.index("end")
     sym_idx = adapter.symbolic_vocab.index("s0_bin0")
     num_syms = adapter.num_symbols
     transitions = {
         0: {s: (1 if s == sym_idx else 0) for s in range(num_syms)},
         1: {s: 1 for s in range(num_syms)},
     }
+    transitions[0][end_idx] = 0
+    transitions[1][end_idx] = 1
     acceptance = [False, True]
     dfa = DFA(transitions, acceptance, None, dictionary_symbols=adapter.symbolic_vocab)
+    return adapter, dfa
 
+
+def test_adapter_manual_dfa_accepts_expected_token():
+    adapter, dfa = _build_manual_test_dfa()
+    tokens = torch.tensor([[0, adapter.end_token_id]])
+    sat = adapter.check_sat_token_ids(tokens, dfa)
+    assert sat.item() is True
+
+
+def test_missing_end_is_unsatisfied_in_canonical_mode():
+    adapter, dfa = _build_manual_test_dfa()
     tokens = torch.tensor([[0]])
-    sat = adapter.batch_check_dfa_sat(tokens, dfa)
-    assert sat.item() == 1.0
+    sat = adapter.check_sat_token_ids(tokens, dfa)
+    assert sat.item() is False
+
+
+def test_token_prob_one_hot_matches_token_id_path():
+    adapter, dfa = _build_manual_test_dfa()
+    deep_dfa = dfa.return_deep_dfa()
+    token_ids = torch.tensor([[0, adapter.end_token_id]], dtype=torch.long)
+
+    hard_sat = adapter.check_sat_token_ids(token_ids, dfa).float()
+
+    token_probs = torch.nn.functional.one_hot(token_ids, num_classes=adapter.num_token_ids).float()
+    symbol_probs = adapter.token_probs_to_symbol_probs(token_probs)
+    soft_sat = adapter.check_sat_symbol_probs(symbol_probs, deep_dfa)
+    assert torch.allclose(soft_sat, hard_sat, atol=1e-6, rtol=1e-6)
 
 
 def test_product_dfa_building():

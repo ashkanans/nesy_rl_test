@@ -40,6 +40,10 @@ def test_datasets():
     xr2 = x2.view(-1, 4)
     yr2 = y2.view(-1, 4)
     assert (yr2[:-1] == xr2[1:]).all()
+    assert all(int((ep.reshape(-1) == cb_ds.end_token_id).sum()) == 1 for ep in cb_ds.episodes_tokens)
+    assert all(
+        int((ep.reshape(-1) == nav_ds.end_token_id).sum()) == 1 for ep in nav_ds.episodes_tokens
+    )
     return {
         "cb_len": len(cb_ds),
         "nav_len": len(nav_ds),
@@ -69,7 +73,7 @@ def test_adapter_and_dfa():
     }
     acceptance = [False, True]
     dfa = DFA(transitions, acceptance, None, dictionary_symbols=adapter.symbolic_vocab)
-    tokens = torch.tensor([[0]])  # first token s0_bin0
+    tokens = torch.tensor([[0, adapter.end_token_id]])  # token then explicit END
     sat = adapter.batch_check_dfa_sat(tokens, dfa)
     return {
         "adapter_num_tokens": adapter.num_token_ids,

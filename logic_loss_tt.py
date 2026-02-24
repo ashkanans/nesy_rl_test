@@ -1,4 +1,5 @@
 import sys
+import warnings
 from pathlib import Path
 
 import torch
@@ -82,9 +83,8 @@ class LogicLossModule:
                 if True, clamp acceptance probabilities from below by eps before
                 taking the log; if False, log(0) is allowed and may produce -inf.
             append_end_symbol:
-                if True, append an extra timestep with a one-hot end symbol to
-                sequences before feeding them to DeepDFA. This can help when the
-                DFA requires seeing the end token to accept.
+                Deprecated compatibility argument. END is now appended exactly once
+                in canonical mode regardless of this flag.
         """
 
         if isinstance(deep_dfa, (list, tuple)):
@@ -98,6 +98,12 @@ class LogicLossModule:
         self.alpha = alpha
         self.eps = eps
         self.clamp_acceptance = clamp_acceptance
+        if append_end_symbol:
+            warnings.warn(
+                "append_end_symbol is deprecated and ignored. "
+                "Canonical end semantics always append one explicit END step.",
+                DeprecationWarning,
+            )
         self.append_end_symbol = append_end_symbol
 
     def _gumbel_softmax_samples(self, logits, num_samples, temperature):
@@ -200,16 +206,8 @@ class LogicLossModule:
         traces_soft = samples.view(batch_size * num_samples, seq_len, num_token_ids)
 
         sym_probs = adapter.token_probs_to_symbol_probs(traces_soft)
-
-        if self.append_end_symbol:
-            # append a single timestep with probability 1 on the "end" symbol
-            if "end" not in adapter.symbolic_vocab:
-                raise ValueError("append_end_symbol=True but 'end' not in adapter.symbolic_vocab")
-            end_idx = adapter.symbolic_vocab.index("end")
-            bns = sym_probs.shape[0]
-            end_step = sym_probs.new_zeros(bns, 1, adapter.num_symbols)
-            end_step[:, 0, end_idx] = 1.0
-            sym_probs = torch.cat([sym_probs, end_step], dim=1)
+        # Canonical finite-trace semantics: consume explicit END exactly once.
+        sym_probs = adapter.append_terminal_end_symbol_probs(sym_probs)
 
         deep_dfa = deep_dfa.to(device)
         sym_probs = sym_probs.to(device)

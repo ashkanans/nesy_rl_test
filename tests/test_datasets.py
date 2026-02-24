@@ -12,11 +12,19 @@ def _check_dataset_sample_shapes_and_shift(dataset):
     assert (y_rows[:-1] == x_rows[1:]).all()
 
 
+def _check_exactly_one_end_per_episode(dataset):
+    end_id = dataset.end_token_id
+    for ep in dataset.episodes_tokens:
+        assert int((ep.reshape(-1) == end_id).sum()) == 1
+
+
 def test_cb_dataset_sample_shape_and_shift():
     dataset = CBSequenceDataset(num_episodes=5, max_steps=5, sequence_length=8)
     _check_dataset_sample_shapes_and_shift(dataset)
+    _check_exactly_one_end_per_episode(dataset)
 
 
 def test_nrm_nav_dataset_sample_shape_and_shift():
     dataset = NRMSafetySequenceDataset(num_episodes=5, max_steps=5, sequence_length=8)
     _check_dataset_sample_shapes_and_shift(dataset)
+    _check_exactly_one_end_per_episode(dataset)

@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sys
+import warnings
 from collections import deque
 from pathlib import Path
 
@@ -15,15 +16,16 @@ sys.path.insert(0, str(REPO_ROOT / "trajectory-transformer"))
 sys.path.insert(0, str(REPO_ROOT / "suffix-prediction"))
 
 import FiniteStateMachine as FSM
-from DeepAutoma import DeepDFA
 from FiniteStateMachine import DFA
 from trajectory.models.transformers import GPT
 
 from cb_dataset import CBSequenceDataset
-from dfa_adapter import TTDFAAdapter
+from dfa_adapter import TTDFAAdapter, get_num_bins_per_dim_for_env
+from dfa_utils import export_dfa_artifacts
 from logic_loss_tt import LogicLossModule
 from nrm_nav_dataset import NRMSafetySequenceDataset
 from nrm_nav_env import NRMSafetyNavEnv
+from specs import get_spec
 
 if torch.cuda.is_available():
     device = "cuda:0"
@@ -78,25 +80,64 @@ def build_product_dfa(dfas):
     return product_dfa
 
 
+def resolve_formulas(args):
+    if args.spec is not None and (args.ltl_formula is not None or args.ltl_formulas is not None):
+        raise ValueError("Provide either --spec or --ltl_formula(s), not both.")
+
+    if args.spec is not None:
+        if args.env not in {"cb", "nrm_nav"}:
+            raise ValueError(
+                f"--spec runtime support is currently only available for cb/nrm_nav, got env={args.env}"
+            )
+        spec = get_spec(args.env, args.spec)
+        return list(spec["formulas"])
+
+    if args.ltl_formulas is not None:
+        return list(args.ltl_formulas)
+    if args.ltl_formula is not None:
+        return [args.ltl_formula]
+    raise ValueError("You must provide --spec or --ltl_formula/--ltl_formulas.")
+
+
+def _inspect_dfa_artifacts(args, raw_dfa):
+    inspect_dir = (
+        args.inspect_output_dir
+        if args.inspect_output_dir is not None
+        else os.path.join(args.save_path or "artifacts", "dfa_inspect")
+    )
+    os.makedirs(inspect_dir, exist_ok=True)
+
+    if isinstance(raw_dfa, list):
+        for i, dfa in enumerate(raw_dfa):
+            info = export_dfa_artifacts(dfa, inspect_dir, stem=f"dfa_{i}")
+            print(
+                f"DFA {i} artifacts: summary={info['summary_path']} dot={info['dot_path']} "
+                f"png={info['png_path']}"
+            )
+    else:
+        info = export_dfa_artifacts(raw_dfa, inspect_dir, stem="dfa")
+        print(
+            f"DFA artifacts: summary={info['summary_path']} dot={info['dot_path']} "
+            f"png={info['png_path']}"
+        )
+
+
 def build_adapter_and_dfa(args, dataset):
     """
     Build TTDFAAdapter + DeepDFA for Colour Bomb.
 
-    We treat:
-        - one observation dim with cardinality = env.n_states
-        - one action dim with cardinality = env.action_space.n
-        - one reward dim with 1 bin (always 0 for now)
-        - one value dim  with 1 bin (always 0 for now)
-
-    This yields an identity mapping for state/action tokens.
+    Build adapter + DFA stack under canonical explicit-END semantics.
     """
-    env = dataset.env
-    obs_bins = env.observation_space.n
-    act_bins = env.action_space.n
-    rew_bins = 1
-    val_bins = 1
+    # Canonical path: disable legacy DFA END hack globally.
+    FSM.USE_END_HACK = False
 
-    num_bins_per_dim = [obs_bins, act_bins, rew_bins, val_bins]
+    env = dataset.env
+    if hasattr(dataset, "num_bins_per_dim"):
+        num_bins_per_dim = list(dataset.num_bins_per_dim)
+    else:
+        obs_bins = env.observation_space.n
+        act_bins = env.action_space.n
+        num_bins_per_dim = get_num_bins_per_dim_for_env(args.env, obs_bins, act_bins)
 
     adapter = TTDFAAdapter(
         observation_dim=dataset.observation_dim,
@@ -109,13 +150,7 @@ def build_adapter_and_dfa(args, dataset):
         use_stop_token=True,
     )
 
-    formulas = []
-    if args.ltl_formulas is not None:
-        formulas = args.ltl_formulas
-    elif args.ltl_formula is not None:
-        formulas = [args.ltl_formula]
-    else:
-        raise ValueError("You must provide --ltl_formula or --ltl_formulas")
+    formulas = resolve_formulas(args)
 
     dfas = [
         adapter.create_dfa_from_ltl(f, f"cb_constraint_{i}", use_safe_dfa=args.use_safe_dfa)
@@ -165,6 +200,7 @@ def build_adapter_and_dfa(args, dataset):
             print(
                 f"  DFA: states={num_states}, accepting_states={num_accept}, symbols={num_symbols}"
             )
+        _inspect_dfa_artifacts(args, raw_dfa)
 
     return adapter, deep_dfa, raw_dfa
 
@@ -222,8 +258,17 @@ def build_dataset(args):
 
 
 def train(args, return_state=False):
-    # control generic DFA end-state hack
-    FSM.USE_END_HACK = not getattr(args, "no_end_state_hack", False)
+    if getattr(args, "no_end_state_hack", False):
+        warnings.warn(
+            "--no_end_state_hack is deprecated; canonical explicit END semantics are always used.",
+            DeprecationWarning,
+        )
+    if getattr(args, "append_end_token_to_dfa", False):
+        warnings.warn(
+            "--append_end_token_to_dfa is deprecated; canonical explicit END semantics are always used.",
+            DeprecationWarning,
+        )
+    FSM.USE_END_HACK = False
 
     dataset = build_dataset(args)
 
@@ -255,7 +300,6 @@ def train(args, return_state=False):
         num_samples=args.num_samples,
         temperature=args.temperature,
         alpha=args.alpha,
-        append_end_symbol=getattr(args, "append_end_token_to_dfa", False),
         eps=getattr(args, "logic_eps", 1e-10),
         clamp_acceptance=not getattr(args, "no_logic_clamp", False),
     )
@@ -324,13 +368,12 @@ def train(args, return_state=False):
 
 
 def _append_end_token(tensor_batch, adapter, append_flag):
-    if not append_flag:
-        return tensor_batch
-    end_token = adapter.num_token_ids - 1
-    end_col = torch.full(
-        (tensor_batch.shape[0], 1), end_token, device=tensor_batch.device, dtype=tensor_batch.dtype
-    )
-    return torch.cat([tensor_batch, end_col], dim=1)
+    if append_flag:
+        warnings.warn(
+            "_append_end_token compatibility path is deprecated; canonical END handling is adapter-driven.",
+            DeprecationWarning,
+        )
+    return tensor_batch
 
 
 def evaluate_model(model, adapter, dfa, dataset, batch_size=64, append_end_token=False):
@@ -363,11 +406,7 @@ def evaluate_model(model, adapter, dfa, dataset, batch_size=64, append_end_token
             x, y, mask = [b.to(device) for b in batch]
             logits, sup_loss = model(x, targets=y, mask=mask)
             preds = logits.argmax(dim=-1)
-            if append_end_token:
-                preds = _append_end_token(preds, adapter, True)
-                x_eval = _append_end_token(x, adapter, True)
-            else:
-                x_eval = x
+            x_eval = x
             if isinstance(dfa, (list, tuple)):
                 sats = [adapter.batch_check_dfa_sat(preds, d) for d in dfa]
                 sat = torch.stack(sats, dim=0).min(dim=0).values
@@ -538,7 +577,11 @@ def rollout_nrm_nav_policy(
             # DFA satisfaction on generated trajectory tokens
             seq_tensor = torch.tensor(tokens_this_ep, dtype=torch.long, device=device).view(1, -1)
             if append_end_token:
-                seq_tensor = _append_end_token(seq_tensor, adapter, True)
+                warnings.warn(
+                    "append_end_token is deprecated in rollout evaluation; "
+                    "canonical END handling is adapter-driven.",
+                    DeprecationWarning,
+                )
             if isinstance(dfa, (list, tuple)):
                 sats = [adapter.batch_check_dfa_sat(seq_tensor, d) for d in dfa]
                 sat = torch.stack(sats, dim=0).min(dim=0).values
@@ -677,9 +720,7 @@ def analyze_dataset(args, dataset, adapter, raw_dfa):
         seg_sats = []
         for i in range(n_seg):
             x, _, _ = dataset[i]
-            x_eval = _append_end_token(
-                x.unsqueeze(0), adapter, getattr(args, "append_end_token_to_dfa", False)
-            )
+            x_eval = x.unsqueeze(0)
             sat = adapter.batch_check_dfa_sat(x_eval, dfa)
             seg_sats.append(float(sat[0].item()))
         seg_sat_results.append(
@@ -697,9 +738,7 @@ def analyze_dataset(args, dataset, adapter, raw_dfa):
             for ei in range(n_eps):
                 ep = episodes[ei]
                 flat = torch.from_numpy(ep.astype(np.int64).reshape(-1))
-                flat = _append_end_token(
-                    flat.unsqueeze(0), adapter, getattr(args, "append_end_token_to_dfa", False)
-                )
+                flat = flat.unsqueeze(0)
                 sat = adapter.batch_check_dfa_sat(flat, dfa)
                 ep_sats.append(float(sat[0].item()))
             ep_sat_results.append(
@@ -802,6 +841,12 @@ def get_arg_parser(add_help=True):
     p.add_argument("--ltl_formula", type=str, default=None)
     p.add_argument("--ltl_formulas", type=str, nargs="+", default=None, help="List of LTL formulas")
     p.add_argument(
+        "--spec",
+        type=str,
+        default=None,
+        help="Named spec preset for the selected env. Runtime support currently: cb, nrm_nav.",
+    )
+    p.add_argument(
         "--dfa_mode",
         type=str,
         choices=["single", "product", "multi"],
@@ -842,15 +887,12 @@ def get_arg_parser(add_help=True):
     p.add_argument(
         "--no_end_state_hack",
         action="store_true",
-        help="Disable the generic DFA end-state hack (keep original accepting states).",
+        help="Deprecated no-op. Canonical explicit END semantics are always used.",
     )
     p.add_argument(
         "--append_end_token_to_dfa",
         action="store_true",
-        help=(
-            "Append an 'end' token/symbol to sequences before feeding them to the DFA "
-            "(useful if the DFA expects to see the end symbol to accept)."
-        ),
+        help="Deprecated no-op. Canonical explicit END semantics are always used.",
     )
 
     p.add_argument(
@@ -878,6 +920,12 @@ def get_arg_parser(add_help=True):
     )
 
     p.add_argument("--save_path", type=str, default="cb_runs")
+    p.add_argument(
+        "--inspect_output_dir",
+        type=str,
+        default=None,
+        help="Output directory for DFA inspection artifacts (summary, DOT, optional PNG).",
+    )
 
     return p
 
