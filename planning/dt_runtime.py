@@ -137,12 +137,33 @@ def evaluate_dt_policy(
     cfg: DTRolloutConfig,
     context_len: int,
     device: torch.device,
-) -> dict[str, Any]:
+    adapter=None,
+    raw_dfa=None,
+    checkpoint_path: str | None = None,
+    spec_name: str | None = None,
+    return_rollout_stats: bool = False,
+) -> dict[str, Any] | tuple[dict[str, Any], dict[str, Any]]:
     model.eval()
     returns = []
+    lengths = []
     goal_hits = 0
     hazard_hits = 0
+    step_violations = 0
+    step_count = 0
     violation_episodes = 0
+    episode_sats = []
+    soft_sats = []
+    reject_sink_entries = 0
+    fallback_decodes = 0
+    episode_goal_hits = []
+    episode_hazard_hits = []
+
+    deep_dfa = None
+    if adapter is not None and raw_dfa is not None and not isinstance(raw_dfa, (list, tuple)):
+        try:
+            deep_dfa = raw_dfa.return_deep_dfa().to(device)
+        except Exception:
+            deep_dfa = None
 
     max_steps = cfg.eval_max_steps if cfg.eval_max_steps is not None else getattr(env.cfg, "max_steps", 100)
     pad_action = env.action_space.n
@@ -156,6 +177,7 @@ def evaluate_dt_policy(
         cum_reward = 0.0
         hit_goal = False
         hit_hazard = False
+        tokens = [int(obs)]
 
         states_hist: list[int] = []
         prev_actions_hist: list[int] = []
@@ -183,6 +205,7 @@ def evaluate_dt_policy(
             prev_action = action
             obs = next_obs
             step_idx += 1
+            step_count += 1
 
             terminal_type = info.get("terminal_type")
             if env_name == "frozenlake":
@@ -190,27 +213,89 @@ def evaluate_dt_policy(
                     hit_goal = True
                 if terminal_type == "H":
                     hit_hazard = True
+                cost_token = 1 if terminal_type == "H" else 0
             elif env_name == "cb":
                 if terminal_type in {"P", "Y", "BLU"}:
                     hit_goal = True
                 if terminal_type == "B":
                     hit_hazard = True
+                cost_token = 0
+            elif env_name == "nrm_nav":
+                if terminal_type == "G":
+                    hit_goal = True
+                if terminal_type == "X":
+                    hit_hazard = True
+                cost_token = 1 if terminal_type == "X" else 0
+            else:
+                cost_token = 0
+
+            step_violations += int(cost_token > 0)
+            tokens.extend([int(action), 0, int(cost_token), int(next_obs)])
 
         returns.append(total_r)
+        lengths.append(int(step_idx))
         goal_hits += int(hit_goal)
         hazard_hits += int(hit_hazard)
         violation_episodes += int(hit_hazard)
+        episode_goal_hits.append(1.0 if hit_goal else 0.0)
+        episode_hazard_hits.append(1.0 if hit_hazard else 0.0)
+
+        if adapter is not None and raw_dfa is not None:
+            tokens_with_end = tokens + [int(adapter.end_token_id), 0, 0, 0]
+            token_tensor = torch.tensor(tokens_with_end, dtype=torch.long, device=device).view(1, -1)
+            if isinstance(raw_dfa, (list, tuple)):
+                sats = [adapter.check_sat_token_ids(token_tensor, d) for d in raw_dfa]
+                sat_val = bool(torch.stack(sats, dim=0).all())
+            else:
+                sat_val = bool(adapter.check_sat_token_ids(token_tensor, raw_dfa)[0].item())
+            episode_sats.append(1.0 if sat_val else 0.0)
+
+            if deep_dfa is not None:
+                token_probs = torch.nn.functional.one_hot(
+                    token_tensor, num_classes=adapter.num_token_ids
+                ).float()
+                sym_probs = adapter.token_probs_to_symbol_probs(token_probs)
+                soft_sat = float(adapter.check_sat_symbol_probs(sym_probs, deep_dfa)[0].item())
+                soft_sats.append(soft_sat)
 
     n = max(1, int(cfg.eval_num_episodes))
-    return {
+    metrics = {
         "return_mean": float(np.mean(returns)) if returns else None,
         "return_std": float(np.std(returns)) if returns else None,
         "goal_rate": float(goal_hits / n),
         "hazard_hit_rate": float(hazard_hits / n),
         "violation_rate_episode": float(violation_episodes / n),
         "violation_rate": float(violation_episodes / n),
+        "violation_rate_step": float(step_violations / step_count) if step_count > 0 else None,
         "num_episodes": int(cfg.eval_num_episodes),
+        "satisfaction_rate": float(np.mean(episode_sats)) if episode_sats else None,
+        "satisfaction_soft_mean": float(np.mean(soft_sats)) if soft_sats else None,
+        "spec": spec_name,
+        "decoding_mode": "greedy",
+        "beam_width": 1,
+        "model_type": "dt",
+        "checkpoint_path": checkpoint_path,
     }
+
+    if not return_rollout_stats:
+        return metrics
+
+    rollout_stats = {
+        "num_episodes": int(cfg.eval_num_episodes),
+        "num_steps": int(step_count),
+        "accept_count": int(sum(1 for x in episode_sats if x >= 0.5)),
+        "violation_count": int(sum(1 for x in episode_sats if x < 0.5)),
+        "reject_sink_entries": int(reject_sink_entries),
+        "fallback_decodes": int(fallback_decodes),
+        "decoding_mode": "greedy",
+        "beam_width": 1,
+        "episode_returns": [float(x) for x in returns],
+        "episode_lengths": lengths,
+        "episode_satisfaction": episode_sats,
+        "episode_goal_hits": episode_goal_hits,
+        "episode_hazard_hits": episode_hazard_hits,
+    }
+    return metrics, rollout_stats
 
 
 def evaluate_random_policy(env, env_name: str, seed: int, eval_num_episodes: int, eval_max_steps: int | None):

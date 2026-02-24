@@ -24,9 +24,16 @@ from planning.dt_runtime import (
     write_metrics_files,
     write_skip_metrics,
 )
-from planning.eval_runtime import ensure_run_dir, set_global_seed, write_json
+from planning.eval_runtime import (
+    ensure_run_dir,
+    set_global_seed,
+    spec_label_from_args,
+    summarize_dfa_bundle,
+    write_json,
+)
 from scripts.train_dt import get_arg_parser as get_train_dt_arg_parser
 from scripts.train_dt import train as train_dt
+from train_cb import build_adapter_and_dfa, resolve_formulas
 
 
 def parse_eval_args():
@@ -38,6 +45,23 @@ def parse_eval_args():
         action="store_true",
         help="If checkpoint is missing, run a train+eval fallback (non-strict evaluation mode).",
     )
+    parser.add_argument("--ltl_formula", type=str, default=None)
+    parser.add_argument("--ltl_formulas", type=str, nargs="+", default=None)
+    parser.add_argument(
+        "--spec",
+        type=str,
+        default=None,
+        help="Named spec preset. Runtime support: cb, nrm_nav, frozenlake.",
+    )
+    parser.add_argument(
+        "--dfa_mode",
+        type=str,
+        choices=["single", "product", "multi"],
+        default="product",
+    )
+    parser.add_argument("--use_safe_dfa", action="store_true")
+    parser.add_argument("--constraint_dims", type=int, nargs="+", default=[0])
+    parser.add_argument("--frozenlake_use_position_props", action="store_true")
     parser.set_defaults(eval_num_episodes=100, no_eval_after_train=True)
     return parser
 
@@ -89,6 +113,30 @@ def main():
         print(f"DT eval skipped: {skip_reason}")
         return
 
+    has_formula_source = (
+        args.spec is not None or args.ltl_formula is not None or args.ltl_formulas is not None
+    )
+    spec_name = spec_label_from_args(args) if has_formula_source else None
+    adapter = None
+    raw_dfa = None
+    formulas = None
+    if has_formula_source:
+        adapter, _, raw_dfa = build_adapter_and_dfa(args, base_dataset)
+        formulas = resolve_formulas(args, dataset=base_dataset)
+        dfa_summary = summarize_dfa_bundle(
+            raw_dfa,
+            spec_name=spec_name,
+            formulas=formulas,
+            dfa_mode=args.dfa_mode,
+        )
+    else:
+        dfa_summary = {
+            "spec": None,
+            "formulas": None,
+            "dfa_mode": None,
+            "note": "No DFA built because no --spec/--ltl_formula(s) were provided.",
+        }
+
     if args.checkpoint is not None and os.path.exists(args.checkpoint):
         model, ckpt_cfg = _load_dt_model(args.checkpoint, device=device)
         context_len = int(ckpt_cfg.get("context_len", args.context_len))
@@ -129,7 +177,13 @@ def main():
         cfg=rollout_cfg,
         context_len=context_len,
         device=device,
+        adapter=adapter,
+        raw_dfa=raw_dfa,
+        checkpoint_path=checkpoint_path,
+        spec_name=spec_name,
+        return_rollout_stats=True,
     )
+    policy_metrics, rollout_stats = policy_metrics
     random_metrics = evaluate_random_policy(
         env=base_dataset.env,
         env_name=args.env,
@@ -150,6 +204,7 @@ def main():
     metrics.update(policy_metrics)
     metrics["success_rate"] = metrics.get("goal_rate")
     metrics["context_len"] = int(context_len)
+    metrics["spec"] = spec_name
     if args.env == "cb":
         metrics["bomb_hit_rate"] = metrics.get("hazard_hit_rate")
 
@@ -163,6 +218,8 @@ def main():
     )
 
     write_metrics_files(run_dir, metrics)
+    write_json(os.path.join(run_dir, "dfa_summary.json"), dfa_summary)
+    write_json(os.path.join(run_dir, "automaton_rollout_stats.json"), rollout_stats)
     write_json(
         os.path.join(run_dir, "dt_eval_summary.json"),
         {

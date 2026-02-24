@@ -25,6 +25,13 @@ def _parse_args():
         description="Evaluate a suite of specification presets for one environment.",
     )
     parser.add_argument("--suite", type=str, default="v1", help="Suite name from specs/suites.py")
+    parser.add_argument(
+        "--model_type",
+        type=str,
+        choices=["tt", "dt"],
+        default="tt",
+        help="Model evaluator backend to invoke.",
+    )
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument(
         "--allow_train_fallback",
@@ -44,65 +51,109 @@ def _parse_args():
         raise ValueError("--suite cannot be combined with --spec/--ltl_formula(s).")
     if args.checkpoint is None and not args.allow_train_fallback:
         raise ValueError("--checkpoint is required unless --allow_train_fallback is set.")
-    if args.env not in {"cb", "frozenlake", "nrm_nav"}:
-        raise ValueError("eval_suite currently supports env in {cb, frozenlake, nrm_nav}.")
+    if args.model_type == "tt":
+        if args.env not in {"cb", "frozenlake", "nrm_nav"}:
+            raise ValueError("eval_suite with model_type=tt supports env in {cb, frozenlake, nrm_nav}.")
+    else:
+        if args.env not in {"cb", "frozenlake"}:
+            raise ValueError("eval_suite with model_type=dt currently supports env in {cb, frozenlake}.")
     return args
 
 
 def _run_eval_subprocess(args, preset: str, run_dir: str) -> dict:
-    cmd = [
-        sys.executable,
-        str(REPO_ROOT / "scripts" / "evaluate.py"),
-        "--env",
-        args.env,
-        "--seed",
-        str(args.seed),
-        "--spec",
-        preset,
-        "--run_dir",
-        run_dir,
-        "--dfa_mode",
-        args.dfa_mode,
-    ]
-    if args.use_safe_dfa:
-        cmd.append("--use_safe_dfa")
-    if args.smoke:
-        cmd.append("--smoke")
-    if args.checkpoint is not None:
-        cmd.extend(["--checkpoint", args.checkpoint])
-    if args.allow_train_fallback:
-        cmd.append("--allow_train_fallback")
+    if args.model_type == "tt":
+        cmd = [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "evaluate.py"),
+            "--env",
+            args.env,
+            "--seed",
+            str(args.seed),
+            "--spec",
+            preset,
+            "--run_dir",
+            run_dir,
+            "--dfa_mode",
+            args.dfa_mode,
+        ]
+        if args.use_safe_dfa:
+            cmd.append("--use_safe_dfa")
+        if args.smoke:
+            cmd.append("--smoke")
+        if args.checkpoint is not None:
+            cmd.extend(["--checkpoint", args.checkpoint])
+        if args.allow_train_fallback:
+            cmd.append("--allow_train_fallback")
 
-    if args.eval_num_episodes is not None:
-        cmd.extend(["--eval_num_episodes", str(args.eval_num_episodes)])
-    if args.eval_max_steps is not None:
-        cmd.extend(["--eval_max_steps", str(args.eval_max_steps)])
-    cmd.extend(["--beam_width", str(args.beam_width)])
-    cmd.extend(["--plan_horizon", str(args.plan_horizon)])
-    cmd.extend(["--sat_rerank_weight", str(args.sat_rerank_weight)])
-    cmd.extend(["--decoding_mode", str(args.decoding_mode)])
-    if args.hard_prune_reject_sink:
-        cmd.append("--hard_prune_reject_sink")
+        if args.eval_num_episodes is not None:
+            cmd.extend(["--eval_num_episodes", str(args.eval_num_episodes)])
+        if args.eval_max_steps is not None:
+            cmd.extend(["--eval_max_steps", str(args.eval_max_steps)])
+        cmd.extend(["--beam_width", str(args.beam_width)])
+        cmd.extend(["--plan_horizon", str(args.plan_horizon)])
+        cmd.extend(["--sat_rerank_weight", str(args.sat_rerank_weight)])
+        cmd.extend(["--decoding_mode", str(args.decoding_mode)])
+        if args.hard_prune_reject_sink:
+            cmd.append("--hard_prune_reject_sink")
 
-    # Keep fallback-training behavior consistent with training defaults when used.
-    cmd.extend(["--num_episodes", str(args.num_episodes)])
-    cmd.extend(["--max_steps", str(args.max_steps)])
-    cmd.extend(["--block_size", str(args.block_size)])
-    cmd.extend(["--batch_size", str(args.batch_size)])
-    cmd.extend(["--epochs", str(args.epochs)])
-    cmd.extend(["--n_layer", str(args.n_layer)])
-    cmd.extend(["--n_head", str(args.n_head)])
-    cmd.extend(["--n_embd", str(args.n_embd)])
-    cmd.extend(["--temperature", str(args.temperature)])
-    cmd.extend(["--num_samples", str(args.num_samples)])
-    cmd.extend(["--alpha", str(args.alpha)])
-    cmd.extend(["--discount", str(args.discount)])
+        # Keep fallback-training behavior consistent with training defaults when used.
+        cmd.extend(["--num_episodes", str(args.num_episodes)])
+        cmd.extend(["--max_steps", str(args.max_steps)])
+        cmd.extend(["--block_size", str(args.block_size)])
+        cmd.extend(["--batch_size", str(args.batch_size)])
+        cmd.extend(["--epochs", str(args.epochs)])
+        cmd.extend(["--n_layer", str(args.n_layer)])
+        cmd.extend(["--n_head", str(args.n_head)])
+        cmd.extend(["--n_embd", str(args.n_embd)])
+        cmd.extend(["--temperature", str(args.temperature)])
+        cmd.extend(["--num_samples", str(args.num_samples)])
+        cmd.extend(["--alpha", str(args.alpha)])
+        cmd.extend(["--discount", str(args.discount)])
 
-    if args.env == "frozenlake":
-        cmd.extend(["--frozenlake_map_size", args.frozenlake_map_size])
-        if args.frozenlake_is_slippery:
-            cmd.append("--frozenlake_is_slippery")
+        if args.env == "frozenlake":
+            cmd.extend(["--frozenlake_map_size", args.frozenlake_map_size])
+            if args.frozenlake_is_slippery:
+                cmd.append("--frozenlake_is_slippery")
+            cmd.extend(["--policy_mix", str(args.policy_mix)])
+    else:
+        cmd = [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "eval_dt.py"),
+            "--env",
+            args.env,
+            "--seed",
+            str(args.seed),
+            "--spec",
+            preset,
+            "--run_dir",
+            run_dir,
+            "--dfa_mode",
+            args.dfa_mode,
+        ]
+        if args.use_safe_dfa:
+            cmd.append("--use_safe_dfa")
+        if args.smoke:
+            cmd.append("--smoke")
+        if args.checkpoint is not None:
+            cmd.extend(["--checkpoint", args.checkpoint])
+        if args.allow_train_fallback:
+            cmd.append("--allow_train_fallback")
+        if args.eval_num_episodes is not None:
+            cmd.extend(["--eval_num_episodes", str(args.eval_num_episodes)])
+        if args.eval_max_steps is not None:
+            cmd.extend(["--eval_max_steps", str(args.eval_max_steps)])
+        cmd.extend(["--num_episodes", str(args.num_episodes)])
+        cmd.extend(["--max_steps", str(args.max_steps)])
+        cmd.extend(["--epochs", str(args.epochs)])
+        cmd.extend(["--batch_size", str(args.batch_size)])
+        cmd.extend(["--n_layer", str(args.n_layer)])
+        cmd.extend(["--n_head", str(args.n_head)])
+        cmd.extend(["--n_embd", str(args.n_embd)])
         cmd.extend(["--policy_mix", str(args.policy_mix)])
+        if args.env == "frozenlake":
+            cmd.extend(["--frozenlake_map_size", args.frozenlake_map_size])
+            if args.frozenlake_is_slippery:
+                cmd.append("--frozenlake_is_slippery")
 
     subprocess.run(cmd, check=True, cwd=REPO_ROOT)
     with open(os.path.join(run_dir, "metrics.json"), "r") as f:
