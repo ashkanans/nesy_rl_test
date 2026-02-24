@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -19,6 +19,17 @@ class DTRolloutConfig:
     eval_num_episodes: int = 100
     eval_max_steps: int | None = None
     rtg_target: float = 1.0
+
+
+@dataclass
+class DTConstrainedConfig:
+    dt_mode: str = "greedy"
+    num_action_candidates: int = 4
+    lookahead_horizon: int = 2
+    lookahead_backend: str = "env"
+    hard_prune_reject_sink: bool = True
+    sat_rerank_weight: float = 2.0
+    candidate_sampling: str = "topk"
 
 
 def apply_smoke_mode_dt(args):
@@ -42,6 +53,10 @@ def apply_smoke_mode_dt(args):
         args.n_embd = min(int(args.n_embd), 64)
     if hasattr(args, "eval_num_episodes"):
         args.eval_num_episodes = min(int(args.eval_num_episodes), 16)
+    if hasattr(args, "num_action_candidates"):
+        args.num_action_candidates = min(int(args.num_action_candidates), 4)
+    if hasattr(args, "lookahead_horizon"):
+        args.lookahead_horizon = min(int(args.lookahead_horizon), 2)
     if getattr(args, "env", None) == "frozenlake" and hasattr(args, "policy_mix"):
         # Ensure smoke dataset has some successful trajectories for a non-degenerate DT signal.
         args.policy_mix = max(float(args.policy_mix), 1.0)
@@ -118,7 +133,7 @@ def _append_context(history, value, max_len: int):
         history.pop(0)
 
 
-def _predict_action(model, device, states, prev_actions, rtgs, timesteps):
+def _predict_action_log_probs(model, device, states, prev_actions, rtgs, timesteps):
     states_t = torch.tensor([states], dtype=torch.long, device=device)
     prev_actions_t = torch.tensor([prev_actions], dtype=torch.long, device=device)
     rtg_t = torch.tensor([rtgs], dtype=torch.float32, device=device)
@@ -126,7 +141,351 @@ def _predict_action(model, device, states, prev_actions, rtgs, timesteps):
     mask_t = torch.ones_like(states_t, dtype=torch.float32, device=device)
     with torch.no_grad():
         logits = model(states_t, prev_actions_t, rtg_t, ts_t, attention_mask=mask_t)
-    return int(torch.argmax(logits[0, -1, :]).item())
+    return torch.log_softmax(logits[0, -1, :], dim=-1)
+
+
+def _predict_action(model, device, states, prev_actions, rtgs, timesteps):
+    log_probs = _predict_action_log_probs(model, device, states, prev_actions, rtgs, timesteps)
+    return int(torch.argmax(log_probs).item())
+
+
+def _transition_single_dfa(dfa, state: int, symbol_id: int) -> int:
+    return int(dfa.transitions[state].get(symbol_id, state))
+
+
+def _initial_dfa_state(raw_dfa):
+    if isinstance(raw_dfa, (list, tuple)):
+        return tuple(0 for _ in raw_dfa)
+    return 0
+
+
+def _advance_dfa_state(raw_dfa, state, symbol_id: int):
+    if isinstance(raw_dfa, (list, tuple)):
+        return tuple(_transition_single_dfa(d, state[i], symbol_id) for i, d in enumerate(raw_dfa))
+    return _transition_single_dfa(raw_dfa, state, symbol_id)
+
+
+def _advance_state_with_tokens(
+    adapter, raw_dfa, state, token_ids_1d: torch.Tensor, token_offset: int = 0
+):
+    token_ids_1d = token_ids_1d.long().view(-1)
+    positions = (
+        torch.arange(token_ids_1d.shape[0], device=token_ids_1d.device) + int(token_offset)
+    ) % int(adapter.transition_dim)
+    mapper = adapter.pos_bin_to_sym_idx.to(token_ids_1d.device)[positions]
+    symbol_ids = torch.gather(mapper, 1, token_ids_1d.unsqueeze(-1)).squeeze(-1)
+    next_state = state
+    for sym in symbol_ids.tolist():
+        next_state = _advance_dfa_state(raw_dfa, next_state, int(sym))
+    return next_state
+
+
+def _is_accepting_state(raw_dfa, state) -> bool:
+    if isinstance(raw_dfa, (list, tuple)):
+        return all(bool(d.acceptance[state[i]]) for i, d in enumerate(raw_dfa))
+    return bool(raw_dfa.acceptance[state])
+
+
+def _reject_sink_states_single(dfa):
+    num_symbols = len(dfa.dictionary_symbols)
+    out = set()
+    for s, transitions in dfa.transitions.items():
+        self_loop_all = True
+        for sym in range(num_symbols):
+            nxt = transitions.get(sym, s)
+            if nxt != s:
+                self_loop_all = False
+                break
+        if self_loop_all and not bool(dfa.acceptance[s]):
+            out.add(int(s))
+    return out
+
+
+def _reject_sink_checker(raw_dfa):
+    if isinstance(raw_dfa, (list, tuple)):
+        reject_sets = [_reject_sink_states_single(d) for d in raw_dfa]
+
+        def checker(state):
+            return any(state[i] in reject_sets[i] for i in range(len(reject_sets)))
+
+        return checker, reject_sets
+
+    reject_set = _reject_sink_states_single(raw_dfa)
+
+    def checker(state):
+        return state in reject_set
+
+    return checker, reject_set
+
+
+def _cost_token_from_terminal(env_name: str, terminal_type: str | None) -> int:
+    if env_name == "frozenlake":
+        return 1 if terminal_type == "H" else 0
+    if env_name == "nrm_nav":
+        return 1 if terminal_type == "X" else 0
+    return 0
+
+
+def _is_hazard_terminal(env_name: str, terminal_type: str | None) -> bool:
+    if env_name == "frozenlake":
+        return terminal_type == "H"
+    if env_name == "cb":
+        return terminal_type == "B"
+    if env_name == "nrm_nav":
+        return terminal_type == "X"
+    return False
+
+
+def _simulate_step_for_lookahead(env, env_name: str, obs: int, action: int, step_idx: int):
+    action = int(action)
+    obs = int(obs)
+    next_obs = obs
+    reward = 0.0
+    done = False
+    info: dict[str, Any] = {}
+
+    max_steps = int(getattr(env.cfg, "max_steps", 100))
+    if env_name == "frozenlake":
+        # Use Gym transition table when slippery, otherwise deterministic grid move.
+        if bool(getattr(env.cfg, "is_slippery", False)) and hasattr(env, "_gym_env"):
+            transitions = env._gym_env.unwrapped.P[obs][action]
+            prob, next_obs, reward, done = max(transitions, key=lambda t: (float(t[0]), int(t[1])))
+            _ = prob
+        else:
+            drdc = {
+                env.ACTION_LEFT: (0, -1),
+                env.ACTION_DOWN: (1, 0),
+                env.ACTION_RIGHT: (0, 1),
+                env.ACTION_UP: (-1, 0),
+            }
+            dr, dc = drdc.get(action, (0, 0))
+            r, c = env._state_to_pos(obs)
+            nr = min(max(r + dr, 0), env.n_rows - 1)
+            nc = min(max(c + dc, 0), env.n_cols - 1)
+            next_obs = int(env._pos_to_state((nr, nc)))
+            cell = env._cell_at_state(next_obs)
+            done = cell in {"G", "H"}
+            reward = 1.0 if cell == "G" else 0.0
+
+        cell = env._cell_at_state(int(next_obs))
+        if done:
+            if cell == "G":
+                info["terminal_type"] = "G"
+            elif cell == "H":
+                info["terminal_type"] = "H"
+    elif env_name == "cb":
+        r, c = env._state_to_pos(obs)
+        dr, dc = env.ACTIONS.get(action, (0, 0))
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < env.n_rows and 0 <= nc < env.n_cols and env.grid[nr][nc] != "#":
+            r, c = nr, nc
+        next_obs = int(env._pos_to_state((r, c)))
+        cell = env._cell_type((r, c))
+        reward = float(env.cfg.step_reward)
+        if cell in {"P", "Y", "BLU"}:
+            reward += float(env.cfg.goal_reward)
+            done = True
+            info["terminal_type"] = cell
+        elif cell == "B":
+            reward += float(env.cfg.bomb_reward)
+            done = True
+            info["terminal_type"] = "B"
+    else:
+        return None
+
+    if (step_idx + 1) >= max_steps and not done:
+        done = True
+        info["truncated"] = True
+
+    return int(next_obs), float(reward), bool(done), info
+
+
+def _candidate_actions(log_probs: torch.Tensor, constrained_cfg: DTConstrainedConfig):
+    n_actions = int(log_probs.shape[0])
+    k = min(max(1, int(constrained_cfg.num_action_candidates)), n_actions)
+    if constrained_cfg.candidate_sampling == "sample":
+        probs = torch.softmax(log_probs, dim=-1)
+        if int(torch.count_nonzero(probs > 0).item()) <= k:
+            idx = torch.topk(log_probs, k=k).indices
+        else:
+            idx = torch.multinomial(probs, num_samples=k, replacement=False)
+    else:
+        idx = torch.topk(log_probs, k=k).indices
+    return [int(i) for i in idx.tolist()]
+
+
+def _select_dt_action(
+    model,
+    device: torch.device,
+    env,
+    env_name: str,
+    obs: int,
+    prev_action: int,
+    step_idx: int,
+    cum_reward: float,
+    cfg: DTRolloutConfig,
+    context_len: int,
+    states_hist: list[int],
+    prev_actions_hist: list[int],
+    rtg_hist: list[float],
+    t_hist: list[int],
+    token_length: int,
+    constrained_cfg: DTConstrainedConfig,
+    adapter,
+    raw_dfa,
+    dfa_state,
+    reject_checker,
+):
+    log_probs = _predict_action_log_probs(
+        model=model,
+        device=device,
+        states=states_hist,
+        prev_actions=prev_actions_hist,
+        rtgs=rtg_hist,
+        timesteps=t_hist,
+    )
+    greedy_action = int(torch.argmax(log_probs).item())
+    mode = constrained_cfg.dt_mode
+    if mode != "constrained":
+        return greedy_action, {"mode": "greedy", "fallback": False, "pruned": 0}
+    if constrained_cfg.lookahead_backend != "env":
+        return greedy_action, {
+            "mode": "greedy",
+            "fallback": True,
+            "fallback_reason": "lookahead_backend_not_supported",
+            "pruned": 0,
+        }
+    if env_name not in {"cb", "frozenlake"}:
+        return greedy_action, {
+            "mode": "greedy",
+            "fallback": True,
+            "fallback_reason": "env_lookahead_not_supported",
+            "pruned": 0,
+        }
+    if adapter is None or raw_dfa is None or dfa_state is None or reject_checker is None:
+        return greedy_action, {
+            "mode": "greedy",
+            "fallback": True,
+            "fallback_reason": "missing_dfa_components",
+            "pruned": 0,
+        }
+
+    candidates = _candidate_actions(log_probs, constrained_cfg)
+    horizon = max(1, int(constrained_cfg.lookahead_horizon))
+    def _search(prune_reject: bool):
+        best_action_local = None
+        best_score_local = None
+        pruned_local = 0
+
+        for first_action in candidates:
+            sim_obs = int(obs)
+            sim_prev_action = int(prev_action)
+            sim_step_idx = int(step_idx)
+            sim_cum_reward = float(cum_reward)
+            sim_states = list(states_hist)
+            sim_prev_actions = list(prev_actions_hist)
+            sim_rtg = list(rtg_hist)
+            sim_ts = list(t_hist)
+            sim_dfa_state = dfa_state
+            sim_token_length = int(token_length)
+            sim_done = False
+            prune_candidate = False
+            score = float(log_probs[first_action].item())
+
+            for depth in range(horizon):
+                if sim_done:
+                    break
+                if depth == 0:
+                    action = int(first_action)
+                else:
+                    _append_context(sim_states, int(sim_obs), context_len)
+                    _append_context(sim_prev_actions, int(sim_prev_action), context_len)
+                    _append_context(sim_rtg, float(cfg.rtg_target - sim_cum_reward), context_len)
+                    _append_context(sim_ts, int(sim_step_idx), context_len)
+                    action = _predict_action(
+                        model=model,
+                        device=device,
+                        states=sim_states,
+                        prev_actions=sim_prev_actions,
+                        rtgs=sim_rtg,
+                        timesteps=sim_ts,
+                    )
+
+                sim_out = _simulate_step_for_lookahead(env, env_name, sim_obs, action, sim_step_idx)
+                if sim_out is None:
+                    return None, None, -1
+                next_obs, reward, sim_done, info = sim_out
+                sim_step_idx += 1
+                sim_cum_reward += float(reward)
+                score += float(reward)
+
+                cost_token = _cost_token_from_terminal(env_name, info.get("terminal_type"))
+                is_hazard = _is_hazard_terminal(env_name, info.get("terminal_type"))
+                trans_tokens = torch.tensor(
+                    [int(action), 0, int(cost_token), int(next_obs)],
+                    dtype=torch.long,
+                    device=device,
+                )
+                sim_dfa_state = _advance_state_with_tokens(
+                    adapter,
+                    raw_dfa,
+                    sim_dfa_state,
+                    trans_tokens,
+                    token_offset=sim_token_length,
+                )
+                sim_token_length += int(trans_tokens.shape[0])
+                if reject_checker(sim_dfa_state):
+                    if prune_reject and constrained_cfg.hard_prune_reject_sink:
+                        prune_candidate = True
+                        break
+                    score -= float(constrained_cfg.sat_rerank_weight)
+                if is_hazard and constrained_cfg.hard_prune_reject_sink:
+                    prune_candidate = True
+                    break
+
+                sim_prev_action = int(action)
+                sim_obs = int(next_obs)
+
+            if prune_candidate:
+                pruned_local += 1
+                continue
+
+            sat_bonus = 1.0 if _is_accepting_state(raw_dfa, sim_dfa_state) else 0.0
+            score += float(constrained_cfg.sat_rerank_weight) * sat_bonus
+            if best_score_local is None or score > best_score_local:
+                best_score_local = score
+                best_action_local = int(first_action)
+
+        return best_action_local, best_score_local, pruned_local
+
+    best_action, _, pruned = _search(prune_reject=True)
+    if pruned < 0:
+        return greedy_action, {
+            "mode": "greedy",
+            "fallback": True,
+            "fallback_reason": "lookahead_simulation_unavailable",
+            "pruned": 0,
+        }
+    if best_action is None and constrained_cfg.hard_prune_reject_sink:
+        best_action, _, pruned_relaxed = _search(prune_reject=False)
+        if pruned_relaxed >= 0:
+            pruned = pruned_relaxed
+
+    if best_action is None:
+        return greedy_action, {
+            "mode": "constrained",
+            "fallback": True,
+            "fallback_reason": "all_candidates_pruned",
+            "pruned": int(max(0, pruned)),
+            "candidates": int(len(candidates)),
+        }
+
+    return int(best_action), {
+        "mode": "constrained",
+        "fallback": False,
+        "pruned": int(pruned),
+        "candidates": int(len(candidates)),
+    }
 
 
 def evaluate_dt_policy(
@@ -142,6 +501,7 @@ def evaluate_dt_policy(
     checkpoint_path: str | None = None,
     spec_name: str | None = None,
     return_rollout_stats: bool = False,
+    constrained_cfg: DTConstrainedConfig | None = None,
 ) -> dict[str, Any] | tuple[dict[str, Any], dict[str, Any]]:
     model.eval()
     returns = []
@@ -155,8 +515,12 @@ def evaluate_dt_policy(
     soft_sats = []
     reject_sink_entries = 0
     fallback_decodes = 0
+    fallback_reason_counts: dict[str, int] = {}
     episode_goal_hits = []
     episode_hazard_hits = []
+
+    if constrained_cfg is None:
+        constrained_cfg = DTConstrainedConfig()
 
     deep_dfa = None
     if adapter is not None and raw_dfa is not None and not isinstance(raw_dfa, (list, tuple)):
@@ -164,6 +528,9 @@ def evaluate_dt_policy(
             deep_dfa = raw_dfa.return_deep_dfa().to(device)
         except Exception:
             deep_dfa = None
+    reject_checker = None
+    if adapter is not None and raw_dfa is not None:
+        reject_checker, _ = _reject_sink_checker(raw_dfa)
 
     max_steps = cfg.eval_max_steps if cfg.eval_max_steps is not None else getattr(env.cfg, "max_steps", 100)
     pad_action = env.action_space.n
@@ -183,6 +550,15 @@ def evaluate_dt_policy(
         prev_actions_hist: list[int] = []
         rtg_hist: list[float] = []
         t_hist: list[int] = []
+        dfa_state = None
+        was_in_reject = False
+        if adapter is not None and raw_dfa is not None:
+            dfa_state = _initial_dfa_state(raw_dfa)
+            init_token = torch.tensor([int(obs)], dtype=torch.long, device=device)
+            dfa_state = _advance_state_with_tokens(
+                adapter, raw_dfa, dfa_state, init_token, token_offset=0
+            )
+            was_in_reject = bool(reject_checker and reject_checker(dfa_state))
 
         while not done and step_idx < int(max_steps):
             _append_context(states_hist, int(obs), context_len)
@@ -191,14 +567,32 @@ def evaluate_dt_policy(
             _append_context(rtg_hist, rtg_now, context_len)
             _append_context(t_hist, int(step_idx), context_len)
 
-            action = _predict_action(
+            action, decode_info = _select_dt_action(
                 model=model,
                 device=device,
-                states=states_hist,
-                prev_actions=prev_actions_hist,
-                rtgs=rtg_hist,
-                timesteps=t_hist,
+                env=env,
+                env_name=env_name,
+                obs=int(obs),
+                prev_action=int(prev_action),
+                step_idx=int(step_idx),
+                cum_reward=float(cum_reward),
+                cfg=cfg,
+                context_len=context_len,
+                states_hist=states_hist,
+                prev_actions_hist=prev_actions_hist,
+                rtg_hist=rtg_hist,
+                t_hist=t_hist,
+                token_length=len(tokens),
+                constrained_cfg=constrained_cfg,
+                adapter=adapter,
+                raw_dfa=raw_dfa,
+                dfa_state=dfa_state,
+                reject_checker=reject_checker,
             )
+            if decode_info.get("fallback"):
+                fallback_decodes += 1
+                reason = str(decode_info.get("fallback_reason", "unspecified"))
+                fallback_reason_counts[reason] = fallback_reason_counts.get(reason, 0) + 1
             next_obs, reward, done, info = _step_env(env, action)
             total_r += reward
             cum_reward += reward
@@ -230,7 +624,22 @@ def evaluate_dt_policy(
                 cost_token = 0
 
             step_violations += int(cost_token > 0)
-            tokens.extend([int(action), 0, int(cost_token), int(next_obs)])
+            trans_tokens = [int(action), 0, int(cost_token), int(next_obs)]
+            token_offset = len(tokens)
+            tokens.extend(trans_tokens)
+            if dfa_state is not None:
+                trans_tensor = torch.tensor(trans_tokens, dtype=torch.long, device=device)
+                dfa_state = _advance_state_with_tokens(
+                    adapter,
+                    raw_dfa,
+                    dfa_state,
+                    trans_tensor,
+                    token_offset=token_offset,
+                )
+                in_reject = bool(reject_checker and reject_checker(dfa_state))
+                if in_reject and not was_in_reject:
+                    reject_sink_entries += 1
+                was_in_reject = in_reject
 
         returns.append(total_r)
         lengths.append(int(step_idx))
@@ -271,8 +680,12 @@ def evaluate_dt_policy(
         "satisfaction_rate": float(np.mean(episode_sats)) if episode_sats else None,
         "satisfaction_soft_mean": float(np.mean(soft_sats)) if soft_sats else None,
         "spec": spec_name,
-        "decoding_mode": "greedy",
-        "beam_width": 1,
+        "decoding_mode": constrained_cfg.dt_mode,
+        "beam_width": int(
+            constrained_cfg.num_action_candidates
+            if constrained_cfg.dt_mode == "constrained"
+            else 1
+        ),
         "model_type": "dt",
         "checkpoint_path": checkpoint_path,
     }
@@ -287,8 +700,17 @@ def evaluate_dt_policy(
         "violation_count": int(sum(1 for x in episode_sats if x < 0.5)),
         "reject_sink_entries": int(reject_sink_entries),
         "fallback_decodes": int(fallback_decodes),
-        "decoding_mode": "greedy",
-        "beam_width": 1,
+        "fallback_reason_counts": fallback_reason_counts,
+        "decoding_mode": constrained_cfg.dt_mode,
+        "beam_width": int(
+            constrained_cfg.num_action_candidates
+            if constrained_cfg.dt_mode == "constrained"
+            else 1
+        ),
+        "lookahead_horizon": int(constrained_cfg.lookahead_horizon),
+        "lookahead_backend": constrained_cfg.lookahead_backend,
+        "hard_prune_reject_sink": bool(constrained_cfg.hard_prune_reject_sink),
+        "sat_rerank_weight": float(constrained_cfg.sat_rerank_weight),
         "episode_returns": [float(x) for x in returns],
         "episode_lengths": lengths,
         "episode_satisfaction": episode_sats,

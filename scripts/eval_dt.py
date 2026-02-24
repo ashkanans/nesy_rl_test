@@ -14,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from models.dt_model import DecisionTransformerDiscrete
 from planning.dt_runtime import (
+    DTConstrainedConfig,
     DTRolloutConfig,
     apply_smoke_mode_dt,
     build_dt_offline_source,
@@ -62,7 +63,56 @@ def parse_eval_args():
     parser.add_argument("--use_safe_dfa", action="store_true")
     parser.add_argument("--constraint_dims", type=int, nargs="+", default=[0])
     parser.add_argument("--frozenlake_use_position_props", action="store_true")
-    parser.set_defaults(eval_num_episodes=100, no_eval_after_train=True)
+    parser.add_argument(
+        "--dt_mode",
+        type=str,
+        choices=["greedy", "constrained"],
+        default="greedy",
+        help="DT inference mode: vanilla greedy or DFA-constrained lookahead.",
+    )
+    parser.add_argument(
+        "--num_action_candidates",
+        type=int,
+        default=4,
+        help="Number of candidate actions considered in constrained DT mode.",
+    )
+    parser.add_argument(
+        "--lookahead_horizon",
+        type=int,
+        default=2,
+        help="Lookahead horizon for constrained DT candidate scoring.",
+    )
+    parser.add_argument(
+        "--lookahead_backend",
+        type=str,
+        choices=["env", "dynamics"],
+        default="env",
+        help="Lookahead backend for constrained DT; dynamics falls back unless implemented.",
+    )
+    parser.add_argument(
+        "--hard_prune_reject_sink",
+        action="store_true",
+        help="In constrained mode, prune candidate branches entering DFA reject sink.",
+    )
+    parser.add_argument(
+        "--no_hard_prune_reject_sink",
+        action="store_true",
+        help="Disable hard-pruning in constrained mode (debug/ablation).",
+    )
+    parser.add_argument(
+        "--sat_rerank_weight",
+        type=float,
+        default=2.0,
+        help="Satisfaction bonus weight used during constrained candidate reranking.",
+    )
+    parser.add_argument(
+        "--candidate_sampling",
+        type=str,
+        choices=["topk", "sample"],
+        default="topk",
+        help="Candidate selection strategy in constrained mode.",
+    )
+    parser.set_defaults(eval_num_episodes=100, no_eval_after_train=True, hard_prune_reject_sink=True)
     return parser
 
 
@@ -169,6 +219,15 @@ def main():
         eval_max_steps=args.eval_max_steps,
         rtg_target=rtg_target,
     )
+    constrained_cfg = DTConstrainedConfig(
+        dt_mode=args.dt_mode,
+        num_action_candidates=args.num_action_candidates,
+        lookahead_horizon=args.lookahead_horizon,
+        lookahead_backend=args.lookahead_backend,
+        hard_prune_reject_sink=bool(args.hard_prune_reject_sink and not args.no_hard_prune_reject_sink),
+        sat_rerank_weight=float(args.sat_rerank_weight),
+        candidate_sampling=args.candidate_sampling,
+    )
     policy_metrics = evaluate_dt_policy(
         model=model,
         env=base_dataset.env,
@@ -182,6 +241,7 @@ def main():
         checkpoint_path=checkpoint_path,
         spec_name=spec_name,
         return_rollout_stats=True,
+        constrained_cfg=constrained_cfg,
     )
     policy_metrics, rollout_stats = policy_metrics
     random_metrics = evaluate_random_policy(
