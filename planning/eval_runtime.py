@@ -141,9 +141,21 @@ def summarize_dfa_bundle(raw_dfa, spec_name=None, formulas=None, dfa_mode=None):
     return summary
 
 
-def _crop_history(history: torch.Tensor, block_size: int) -> torch.Tensor:
+def _crop_history(
+    history: torch.Tensor, block_size: int, transition_dim: int | None = None
+) -> torch.Tensor:
     if history.shape[1] > block_size:
-        return history[:, -block_size:]
+        if transition_dim is None or transition_dim <= 1:
+            return history[:, -block_size:]
+
+        # Keep token-phase alignment by dropping a multiple of transition_dim.
+        # History lengths in this code path are not guaranteed to be exactly
+        # transition-aligned after truncation if we simply take the last block.
+        excess = int(history.shape[1] - block_size)
+        drop = int(np.ceil(excess / transition_dim) * transition_dim)
+        if drop >= history.shape[1]:
+            return history[:, -block_size:]
+        return history[:, drop:]
     return history
 
 
@@ -223,8 +235,28 @@ def _advance_state_with_tokens(adapter, raw_dfa, state, token_ids_1d: torch.Tens
     return next_state
 
 
-def _extract_action_log_probs(logits_last: torch.Tensor, n_actions: int) -> torch.Tensor:
-    action_logits = logits_last[:, :n_actions]
+def _extract_action_log_probs(
+    logits: torch.Tensor, n_actions: int, transition_dim: int
+) -> torch.Tensor:
+    """
+    Extract next-action log-probabilities from sequence logits.
+
+    Training targets are shifted by one transition row (not by one token), so
+    action_{t+1} is predicted at the action position of transition t. For a
+    sequence of length T this corresponds to index T-transition_dim.
+    """
+    if logits.dim() != 3:
+        raise ValueError("Expected logits shape [B, T, V].")
+    seq_len = int(logits.shape[1])
+    if seq_len <= 0:
+        raise ValueError("Empty logits sequence.")
+
+    if seq_len <= transition_dim:
+        action_idx = seq_len - 1
+    else:
+        action_idx = seq_len - int(transition_dim)
+
+    action_logits = logits[:, action_idx, :n_actions]
     return torch.log_softmax(action_logits, dim=-1).squeeze(0)
 
 
@@ -239,9 +271,11 @@ def _decode_action(
 ):
     model_device = next(model.parameters()).device
     history = history.to(model_device)
-    idx = _crop_history(history, model.block_size)
+    idx = _crop_history(history, model.block_size, transition_dim=adapter.transition_dim)
     logits, _ = model(idx)
-    action_log_probs = _extract_action_log_probs(logits[:, -1, :], n_actions)
+    action_log_probs = _extract_action_log_probs(
+        logits, n_actions=n_actions, transition_dim=adapter.transition_dim
+    )
 
     if decoding_cfg.mode == "greedy":
         action = int(torch.argmax(action_log_probs).item())
@@ -264,9 +298,13 @@ def _decode_action(
     for _ in range(horizon):
         expanded = []
         for beam in beams:
-            local_idx = _crop_history(beam["history"], model.block_size)
+            local_idx = _crop_history(
+                beam["history"], model.block_size, transition_dim=adapter.transition_dim
+            )
             local_logits, _ = model(local_idx)
-            local_action_log_probs = _extract_action_log_probs(local_logits[:, -1, :], n_actions)
+            local_action_log_probs = _extract_action_log_probs(
+                local_logits, n_actions=n_actions, transition_dim=adapter.transition_dim
+            )
             topk = torch.topk(local_action_log_probs, k=min(k, n_actions))
 
             for logp, action_tensor in zip(topk.values.tolist(), topk.indices.tolist()):
@@ -281,7 +319,9 @@ def _decode_action(
 
                 # Complete the transition tokens after action via greedy token decoding.
                 for _ in range(adapter.transition_dim - 1):
-                    token_idx = _crop_history(next_history, model.block_size)
+                    token_idx = _crop_history(
+                        next_history, model.block_size, transition_dim=adapter.transition_dim
+                    )
                     token_logits, _ = model(token_idx)
                     logits_last = token_logits[:, -1, :]
                     token_log_probs = torch.log_softmax(logits_last, dim=-1)

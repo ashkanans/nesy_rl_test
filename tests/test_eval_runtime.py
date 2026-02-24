@@ -1,7 +1,15 @@
 from types import SimpleNamespace
 
+import torch
+
 from dfa_adapter import TTDFAAdapter
-from eval_runtime import apply_smoke_mode, spec_label_from_args, summarize_dfa_bundle
+from planning.eval_runtime import (
+    _crop_history,
+    _extract_action_log_probs,
+    apply_smoke_mode,
+    spec_label_from_args,
+    summarize_dfa_bundle,
+)
 
 
 def test_apply_smoke_mode_caps_and_injects_default_spec_for_cb():
@@ -92,3 +100,25 @@ def test_apply_smoke_mode_sets_frozenlake_defaults():
     assert out.num_episodes <= 200
     assert out.max_steps <= 30
     assert out.policy_mix == 0.0
+
+
+def test_crop_history_preserves_transition_alignment():
+    history = torch.arange(33, dtype=torch.long).view(1, -1)
+    cropped = _crop_history(history, block_size=32, transition_dim=4)
+
+    assert int(cropped.shape[1]) <= 32
+    dropped = int(history.shape[1] - cropped.shape[1])
+    assert dropped % 4 == 0
+    assert int(cropped[0, -1].item()) == int(history[0, -1].item())
+
+
+def test_extract_action_log_probs_uses_transition_shift_position():
+    logits = torch.zeros(1, 9, 6, dtype=torch.float32)
+    # Last-token logits prefer action 1, but transition-shift action index should
+    # be 9 - 4 = 5, where action 2 is preferred.
+    logits[0, 8, 1] = 10.0
+    logits[0, 5, 2] = 10.0
+
+    log_probs = _extract_action_log_probs(logits, n_actions=4, transition_dim=4)
+    action = int(torch.argmax(log_probs).item())
+    assert action == 2

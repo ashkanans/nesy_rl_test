@@ -45,10 +45,15 @@ def parse_args():
     p.add_argument("--n_head", type=int, default=4)
     p.add_argument("--n_embd", type=int, default=128)
     p.add_argument("--policy_mix", type=float, default=0.5)
+    p.add_argument("--alpha", type=float, default=0.0)
 
     p.add_argument("--spec", type=str, default="avoid_holes")
+    p.add_argument("--use_safe_dfa", action="store_true")
     p.add_argument("--frozenlake_map_size", type=str, default="4x4", choices=["4x4", "8x8"])
     p.add_argument("--frozenlake_is_slippery", action="store_true")
+    p.add_argument("--beam_width", type=int, default=8)
+    p.add_argument("--plan_horizon", type=int, default=16)
+    p.add_argument("--sat_rerank_weight", type=float, default=1.0)
 
     p.add_argument("--checkpoint", type=str, default=None)
     p.add_argument("--skip_train", action="store_true")
@@ -120,12 +125,16 @@ def _train_checkpoint(args, train_dir: Path) -> Path:
         str(args.n_embd),
         "--policy_mix",
         str(args.policy_mix),
+        "--alpha",
+        str(args.alpha),
         "--frozenlake_map_size",
         args.frozenlake_map_size,
         "--run_dir",
         str(train_dir),
         "--no_eval_after_train",
     ]
+    if args.use_safe_dfa:
+        cmd.append("--use_safe_dfa")
     if args.frozenlake_is_slippery:
         cmd.append("--frozenlake_is_slippery")
 
@@ -137,38 +146,38 @@ def _train_checkpoint(args, train_dir: Path) -> Path:
     return checkpoints[-1]
 
 
-def _decode_modes() -> list[DecodeMode]:
+def _decode_modes(args) -> list[DecodeMode]:
     return [
         DecodeMode(
             name="greedy",
             decoding_mode="greedy",
-            beam_width=8,
-            plan_horizon=16,
-            sat_rerank_weight=1.0,
+            beam_width=int(args.beam_width),
+            plan_horizon=int(args.plan_horizon),
+            sat_rerank_weight=float(args.sat_rerank_weight),
             hard_prune_reject_sink=False,
         ),
         DecodeMode(
             name="beam",
             decoding_mode="beam",
-            beam_width=8,
-            plan_horizon=16,
-            sat_rerank_weight=1.0,
+            beam_width=int(args.beam_width),
+            plan_horizon=int(args.plan_horizon),
+            sat_rerank_weight=float(args.sat_rerank_weight),
             hard_prune_reject_sink=False,
         ),
         DecodeMode(
             name="constrained_beam_sat_rerank",
             decoding_mode="constrained_beam",
-            beam_width=8,
-            plan_horizon=16,
-            sat_rerank_weight=1.0,
+            beam_width=int(args.beam_width),
+            plan_horizon=int(args.plan_horizon),
+            sat_rerank_weight=float(args.sat_rerank_weight),
             hard_prune_reject_sink=False,
         ),
         DecodeMode(
             name="constrained_beam_hard_prune",
             decoding_mode="constrained_beam",
-            beam_width=8,
-            plan_horizon=16,
-            sat_rerank_weight=1.0,
+            beam_width=int(args.beam_width),
+            plan_horizon=int(args.plan_horizon),
+            sat_rerank_weight=float(args.sat_rerank_weight),
             hard_prune_reject_sink=True,
         ),
     ]
@@ -184,6 +193,8 @@ def _run_eval(args, ckpt: Path, mode: DecodeMode, eval_seed: int, eval_dir: Path
         str(ckpt),
         "--spec",
         args.spec,
+        "--alpha",
+        str(args.alpha),
         "--seed",
         str(eval_seed),
         "--num_episodes",
@@ -211,6 +222,8 @@ def _run_eval(args, ckpt: Path, mode: DecodeMode, eval_seed: int, eval_dir: Path
         "--run_dir",
         str(eval_dir),
     ]
+    if args.use_safe_dfa:
+        cmd.append("--use_safe_dfa")
     if args.frozenlake_is_slippery:
         cmd.append("--frozenlake_is_slippery")
     if mode.hard_prune_reject_sink:
@@ -333,7 +346,7 @@ def main():
 
     checkpoint_path = _train_checkpoint(args, train_dir)
 
-    modes = _decode_modes()
+    modes = _decode_modes(args)
     per_seed_rows = []
     mode_payload = {}
 
@@ -415,6 +428,11 @@ def main():
         "map_size": args.frozenlake_map_size,
         "is_slippery": bool(args.frozenlake_is_slippery),
         "spec": args.spec,
+        "use_safe_dfa": bool(args.use_safe_dfa),
+        "alpha": float(args.alpha),
+        "beam_width": int(args.beam_width),
+        "plan_horizon": int(args.plan_horizon),
+        "sat_rerank_weight": float(args.sat_rerank_weight),
         "train_seed": int(args.train_seed),
         "eval_seeds": [int(s) for s in args.eval_seeds],
         "episodes_per_eval_seed": int(args.episodes_per_eval_seed),
