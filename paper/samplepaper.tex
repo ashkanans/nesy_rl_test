@@ -67,13 +67,20 @@ We study offline sequence RL with transformer policies trained on tokenized tran
 
 \section{Method}
 \subsection{Implementation Details and Reproducibility}
-We standardize experiment execution via a unified command-line interface with smoke-mode validation before full runs. Each run produces structured artifacts, including metrics files, checkpoint snapshots, and diagnostic plots, and these artifacts are logged with run-level metadata for traceability. Dependencies are separated into core logic/modeling, transformer-specific, and benchmark-specific groups to reduce environment conflicts. We use unit tests and CI to validate environment wrappers, trajectory formatting, and automata-based satisfaction evaluation.
+We standardize experiment execution via a unified command-line interface with smoke-mode validation before full runs. Each run produces structured artifacts, including metrics files, checkpoint snapshots, and diagnostic plots, and these artifacts are logged with run-level metadata for traceability. Dependencies are separated into core logic/modeling, transformer-specific, and benchmark-specific groups to reduce environment conflicts. We use unit tests and CI to validate environment wrappers, trajectory formatting, and automata-based satisfaction evaluation. All runs write standardized configuration and metric artifacts to support aggregation and reproducibility.
 
 \subsection{Finite-Trace Logic Stack}
 The adapter defines the authoritative token schema and end token identifier used by all components. Dataset generators create full episodes with exactly one end marker, while training windows may or may not contain that marker depending on where the window is sampled. Canonical satisfaction evaluation is defined on complete finite traces: traces without an end marker are treated as incomplete by default, and therefore unsatisfied in canonical mode.
 
 \subsection{Differentiable Satisfaction with Hard and Soft Traces}
 We expose two aligned interfaces for satisfaction checking. The hard path maps token IDs to symbol IDs and returns exact Boolean satisfaction per trajectory. The soft path maps token distributions to symbol distributions and returns acceptance probabilities for differentiable training. Let $p_t(k)$ be token probabilities at step $t$ and let $m_t(k)$ map token $k$ to symbol $s$ at position $t$. Then symbol probabilities are aggregated as $P_t(s)=\sum_{k:m_t(k)=s} p_t(k)$ before DeepDFA rollout. This keeps automata transitions differentiable while preserving consistency with exact DFA semantics; one-hot token distributions recover the hard-path result up to numerical tolerance.
+
+\subsection{Automaton-Aware Constrained Decoding}
+At evaluation time, we support greedy decoding, unconstrained beam search, and automaton-aware constrained beam search. Each beam maintains an explicit DFA state that is updated after each decoded transition token group. For a partial beam $b_{1:t}$ with DFA state $q_t$, we score
+\begin{equation}
+\mathrm{Score}(b_{1:t})=\sum_{i=1}^{t}\log p(a_i \mid h_i)+\lambda_{\mathrm{sat}} \cdot \mathbf{1}[q_t \in F],
+\end{equation}
+where $F$ is the accepting-state set and $\lambda_{\mathrm{sat}}$ controls soft reranking toward beams consistent with the temporal specification. In constrained mode, we additionally apply hard pruning: beams that enter identified rejecting sink states are removed. This hybrid design preserves probabilistic search while enforcing automaton-level safety constraints when available.
 
 \section{Preliminary Experiments}
 \subsection{Task Specifications}
@@ -98,6 +105,9 @@ AntMaze & placeholder\_reach & \texttt{F(s0\_bin2)} & compile-tested placeholder
 
 \subsection{DFA Inspection and Diagnostics}
 To audit specification complexity and debugging behavior, we export per-spec automata summaries and graph representations (\texttt{.dot}, optional \texttt{.png}). These utilities report state counts, accepting states, sink states, and symbol-set size, and are used to sanity-check compiled formulas before full training runs.
+
+\subsection{Metrics}
+We report four primary metrics for policy reliability under logic constraints. \textbf{Return} is the mean episodic reward over rollout episodes. \textbf{Violation rate} is reported both at episode level (fraction of episodes whose finalized trace violates the specification) and step level (fraction of unsafe steps under environment-specific unsafe predicates). \textbf{Hard LTLf satisfaction rate} is the fraction of rollout traces accepted by the compiled DFA under explicit finite-trace termination semantics. \textbf{Soft satisfaction score} is the mean acceptance probability from the differentiable automaton (DeepDFA) evaluated on symbol probabilities. Unless stated otherwise, all reported reliability metrics are computed on executed environment rollouts; decoded token prefixes are used only to select actions during planning.
 
 \begin{figure}[t]
 \centering
