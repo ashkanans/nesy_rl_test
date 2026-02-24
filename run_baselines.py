@@ -5,6 +5,8 @@ import json
 import os
 import time
 
+import numpy as np
+
 from eval_runtime import (
     DecodingConfig,
     apply_smoke_mode,
@@ -32,6 +34,9 @@ def _null_metrics(env, spec, seed):
         "satisfaction_soft_mean": None,
         "violation_rate_episode": None,
         "violation_rate_step": None,
+        "goal_rate": None,
+        "bomb_hit_rate": None,
+        "hazard_hit_rate": None,
         "decoding_mode": None,
         "beam_width": None,
         "model_type": "tt",
@@ -61,7 +66,7 @@ def run_baseline(name, args, alpha_override=None, suffix=None):
     model, adapter, _, dataset, raw_dfa = train(cfg, return_state=True)
 
     spec_name = spec_label_from_args(cfg)
-    formulas = resolve_formulas(cfg)
+    formulas = resolve_formulas(cfg, dataset=dataset)
     dfa_summary = summarize_dfa_bundle(
         raw_dfa, spec_name=spec_name, formulas=formulas, dfa_mode=cfg.dfa_mode
     )
@@ -95,7 +100,13 @@ def run_baseline(name, args, alpha_override=None, suffix=None):
     metrics["runtime_sec"] = float(time.time() - train_t0)
     metrics["run_id"] = run_id
     metrics["timestamp_utc"] = ts
-    save_evaluation_artifacts(cfg.run_dir, metrics, dfa_summary, rollout_stats)
+    save_evaluation_artifacts(
+        cfg.run_dir,
+        metrics,
+        dfa_summary,
+        rollout_stats,
+        save_plots=getattr(args, "save_plots", False),
+    )
     return metrics
 
 
@@ -150,6 +161,9 @@ def write_summary_artifacts(base_dir, results):
         "satisfaction_soft_mean",
         "violation_rate_episode",
         "violation_rate_step",
+        "goal_rate",
+        "bomb_hit_rate",
+        "hazard_hit_rate",
         "decoding_mode",
         "beam_width",
         "model_type",
@@ -168,10 +182,67 @@ def write_summary_artifacts(base_dir, results):
     return json_path, csv_path
 
 
+def _save_summary_plots(base_dir, results):
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        return
+
+    plots_dir = os.path.join(base_dir, "plots")
+    os.makedirs(plots_dir, exist_ok=True)
+
+    labels = list(results.keys())
+    if not labels:
+        return
+
+    def _vals(key):
+        out = []
+        for label in labels:
+            val = results[label].get(key)
+            out.append(np.nan if val is None else float(val))
+        return np.asarray(out, dtype=np.float32)
+
+    width = 0.2
+    x = np.arange(len(labels))
+    keys = ["goal_rate", "bomb_hit_rate", "satisfaction_rate", "return_mean"]
+    vals = [_vals(k) for k in keys]
+
+    plt.figure(figsize=(8, 4))
+    for i, (k, v) in enumerate(zip(keys, vals)):
+        plt.bar(x + (i - 1.5) * width, np.nan_to_num(v, nan=0.0), width=width, label=k)
+    plt.xticks(x, labels, rotation=15, ha="right")
+    plt.legend(loc="best", fontsize=8)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, "metrics_bar.png"))
+    plt.close()
+
+    sats = _vals("satisfaction_rate")
+    plt.figure(figsize=(6, 4))
+    plt.plot(range(len(labels)), np.nan_to_num(sats, nan=0.0), marker="o")
+    plt.xticks(range(len(labels)), labels, rotation=15, ha="right")
+    plt.ylim(-0.05, 1.05)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, "satisfaction_trend.png"))
+    plt.close()
+
+    rets = _vals("return_mean")
+    plt.figure(figsize=(5, 4))
+    plt.scatter(np.nan_to_num(rets, nan=0.0), np.nan_to_num(sats, nan=0.0))
+    for i, label in enumerate(labels):
+        plt.annotate(label, (np.nan_to_num(rets[i], nan=0.0), np.nan_to_num(sats[i], nan=0.0)))
+    plt.xlabel("return_mean")
+    plt.ylabel("satisfaction_rate")
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, "return_vs_satisfaction.png"))
+    plt.close()
+
+
 def main():
     parser = parse_baseline_args()
     args = parser.parse_args()
     args = apply_smoke_mode(args)
+    if args.evaluate and not getattr(args, "save_plots", False):
+        args.save_plots = True
     set_global_seed(args.seed)
 
     if args.base_run_dir is None:
@@ -193,6 +264,8 @@ def main():
             results[name] = run_baseline(name, args)
 
     json_path, csv_path = write_summary_artifacts(args.base_run_dir, results)
+    if getattr(args, "save_plots", False):
+        _save_summary_plots(args.base_run_dir, results)
     print(f"Saved summary JSON to {json_path}")
     print(f"Saved summary CSV to {csv_path}")
 

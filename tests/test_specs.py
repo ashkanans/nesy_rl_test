@@ -54,12 +54,14 @@ def test_resolve_formulas_rejects_spec_plus_manual_formula():
         resolve_formulas(args)
 
 
-def test_resolve_formulas_rejects_placeholder_env_runtime():
+def test_resolve_formulas_accepts_runtime_spec_for_frozenlake():
     args = SimpleNamespace(
         env="frozenlake",
-        spec="placeholder_safe",
+        spec="avoid_holes",
         ltl_formula=None,
         ltl_formulas=None,
+        frozenlake_use_position_props=False,
     )
-    with pytest.raises(ValueError, match="only available for cb/nrm_nav"):
-        resolve_formulas(args)
+    formulas = resolve_formulas(args)
+    assert len(formulas) == 1
+    assert "s0_bin" in formulas[0]

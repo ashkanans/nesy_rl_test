@@ -54,7 +54,8 @@ def apply_smoke_mode(args):
 
     # Caps tuned for <=2 minutes end-to-end on CPU in this repository.
     if hasattr(args, "num_episodes"):
-        args.num_episodes = min(int(args.num_episodes), 64)
+        cap = 200 if getattr(args, "env", None) == "frozenlake" else 64
+        args.num_episodes = min(int(args.num_episodes), cap)
     if hasattr(args, "max_steps"):
         args.max_steps = min(int(args.max_steps), 30)
     if hasattr(args, "epochs"):
@@ -75,6 +76,8 @@ def apply_smoke_mode(args):
         args.beam_width = min(int(args.beam_width), 4)
     if hasattr(args, "plan_horizon"):
         args.plan_horizon = min(int(args.plan_horizon), 2)
+    if hasattr(args, "policy_mix") and getattr(args, "env", None) == "frozenlake":
+        args.policy_mix = 0.0
 
     # Convenience only in smoke mode: inject a default spec if user did not provide one.
     has_manual_formula = getattr(args, "ltl_formula", None) is not None or getattr(
@@ -85,6 +88,8 @@ def apply_smoke_mode(args):
             args.spec = "avoid_single_bomb_22"
         elif getattr(args, "env", None) == "nrm_nav":
             args.spec = "avoid_state_11"
+        elif getattr(args, "env", None) == "frozenlake":
+            args.spec = "reach_goal_while_avoid_holes"
 
     return args
 
@@ -326,6 +331,8 @@ def _is_unsafe_state(env_name: str, env, state_id: int) -> bool:
         return pos in env.unsafe_positions
     if env_name == "cb":
         return bool(env.is_bomb_state(int(state_id)))
+    if env_name == "frozenlake":
+        return bool(env.is_hole_state(int(state_id)))
     return False
 
 
@@ -357,6 +364,8 @@ def evaluate_policy_rollouts(
     episode_lengths = []
     episode_sats = []
     episode_violations = []
+    episode_goal_hits = []
+    episode_hazard_hits = []
     step_violations = 0
     step_count = 0
     reject_sink_entries = 0
@@ -390,6 +399,8 @@ def evaluate_policy_rollouts(
             ep_len = 0
             was_in_reject = reject_checker(dfa_state)
             done = False
+            ep_goal = False
+            ep_hazard = False
 
             while not done and ep_len < int(max_steps):
                 action, decode_info = _decode_action(
@@ -413,7 +424,13 @@ def evaluate_policy_rollouts(
                 if unsafe_hit:
                     step_violations += 1
 
-                cost_token = 1 if (env_name == "nrm_nav" and info.get("terminal_type") == "X") else 0
+                terminal_type = info.get("terminal_type")
+                if env_name == "nrm_nav":
+                    cost_token = 1 if terminal_type == "X" else 0
+                elif env_name == "frozenlake":
+                    cost_token = 1 if terminal_type == "H" else 0
+                else:
+                    cost_token = 0
                 transition_tokens = [int(action), 0, int(cost_token), int(next_obs)]
                 tokens.extend(transition_tokens)
 
@@ -427,6 +444,22 @@ def evaluate_policy_rollouts(
                 if in_reject and not was_in_reject:
                     reject_sink_entries += 1
                 was_in_reject = in_reject
+
+                if env_name == "cb":
+                    if terminal_type in {"P", "Y", "BLU"}:
+                        ep_goal = True
+                    if terminal_type == "B":
+                        ep_hazard = True
+                elif env_name == "nrm_nav":
+                    if terminal_type == "G":
+                        ep_goal = True
+                    if terminal_type == "X":
+                        ep_hazard = True
+                elif env_name == "frozenlake":
+                    if terminal_type == "G":
+                        ep_goal = True
+                    if terminal_type == "H":
+                        ep_hazard = True
 
             tokens_with_end = tokens + [int(adapter.end_token_id), 0, 0, 0]
             token_tensor = torch.tensor(tokens_with_end, dtype=torch.long, device=model_device).view(
@@ -450,12 +483,16 @@ def evaluate_policy_rollouts(
             episode_lengths.append(int(ep_len))
             episode_sats.append(1.0 if sat_val else 0.0)
             episode_violations.append(0.0 if sat_val else 1.0)
+            episode_goal_hits.append(1.0 if ep_goal else 0.0)
+            episode_hazard_hits.append(1.0 if ep_hazard else 0.0)
 
     return_mean = float(np.mean(episode_returns)) if episode_returns else None
     return_std = float(np.std(episode_returns)) if episode_returns else None
     satisfaction_rate = float(np.mean(episode_sats)) if episode_sats else None
     violation_rate_episode = float(np.mean(episode_violations)) if episode_violations else None
     violation_rate_step = float(step_violations / step_count) if step_count > 0 else None
+    goal_rate = float(np.mean(episode_goal_hits)) if episode_goal_hits else None
+    hazard_hit_rate = float(np.mean(episode_hazard_hits)) if episode_hazard_hits else None
 
     metrics = {
         "return_mean": return_mean,
@@ -470,6 +507,9 @@ def evaluate_policy_rollouts(
         "satisfaction_soft_mean": float(np.mean(soft_sats)) if soft_sats else None,
         "violation_rate_episode": violation_rate_episode,
         "violation_rate_step": violation_rate_step,
+        "goal_rate": goal_rate,
+        "bomb_hit_rate": hazard_hit_rate if env_name == "cb" else None,
+        "hazard_hit_rate": hazard_hit_rate,
         "decoding_mode": decoding_cfg.mode,
         "beam_width": int(decoding_cfg.beam_width),
         "model_type": "tt",
@@ -493,15 +533,76 @@ def evaluate_policy_rollouts(
         "sat_rerank_weight": float(decoding_cfg.sat_rerank_weight),
         "episode_returns": episode_returns,
         "episode_lengths": episode_lengths,
+        "episode_satisfaction": episode_sats,
+        "episode_goal_hits": episode_goal_hits,
+        "episode_hazard_hits": episode_hazard_hits,
     }
 
     return metrics, rollout_stats
 
 
-def save_evaluation_artifacts(run_dir: str, metrics: dict, dfa_summary: dict, rollout_stats: dict):
+def _save_metrics_plots(run_dir: str, metrics: dict, rollout_stats: dict):
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        return
+
+    plots_dir = os.path.join(run_dir, "plots")
+    os.makedirs(plots_dir, exist_ok=True)
+
+    bar_keys = ["goal_rate", "bomb_hit_rate", "satisfaction_rate", "return_mean"]
+    labels = []
+    values = []
+    for key in bar_keys:
+        val = metrics.get(key)
+        if val is None:
+            continue
+        labels.append(key)
+        values.append(float(val))
+    if values:
+        plt.figure(figsize=(6, 4))
+        plt.bar(labels, values)
+        plt.xticks(rotation=25, ha="right")
+        plt.ylim(-0.1, max(1.0, max(values) + 0.1))
+        plt.tight_layout()
+        plt.savefig(os.path.join(plots_dir, "metrics_bar.png"))
+        plt.close()
+
+    sats = rollout_stats.get("episode_satisfaction") or []
+    if sats:
+        xs = np.arange(1, len(sats) + 1)
+        running = np.cumsum(np.asarray(sats, dtype=np.float32)) / np.maximum(1, xs)
+        plt.figure(figsize=(6, 4))
+        plt.plot(xs, running)
+        plt.xlabel("Episode")
+        plt.ylabel("Running satisfaction")
+        plt.ylim(-0.05, 1.05)
+        plt.tight_layout()
+        plt.savefig(os.path.join(plots_dir, "satisfaction_trend.png"))
+        plt.close()
+
+    if metrics.get("return_mean") is not None and metrics.get("satisfaction_rate") is not None:
+        plt.figure(figsize=(4, 4))
+        plt.scatter([float(metrics["return_mean"])], [float(metrics["satisfaction_rate"])])
+        plt.xlabel("return_mean")
+        plt.ylabel("satisfaction_rate")
+        plt.tight_layout()
+        plt.savefig(os.path.join(plots_dir, "return_vs_satisfaction.png"))
+        plt.close()
+
+
+def save_evaluation_artifacts(
+    run_dir: str,
+    metrics: dict,
+    dfa_summary: dict,
+    rollout_stats: dict,
+    save_plots: bool = False,
+):
     write_json(os.path.join(run_dir, "metrics.json"), metrics)
     write_json(os.path.join(run_dir, "dfa_summary.json"), dfa_summary)
     write_json(os.path.join(run_dir, "automaton_rollout_stats.json"), rollout_stats)
+    if save_plots:
+        _save_metrics_plots(run_dir, metrics, rollout_stats)
 
 
 def warn_if_train_fallback(enabled: bool):

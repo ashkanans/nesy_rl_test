@@ -33,10 +33,12 @@ from eval_runtime import (
     spec_label_from_args,
     summarize_dfa_bundle,
 )
+from frozenlake_dataset import FrozenLakeSequenceDataset
 from logic_loss_tt import LogicLossModule
 from nrm_nav_dataset import NRMSafetySequenceDataset
 from nrm_nav_env import NRMSafetyNavEnv
 from specs import get_spec
+from specs.frozenlake_specs import build_frozenlake_formulas
 
 if torch.cuda.is_available():
     device = "cuda:0"
@@ -91,17 +93,28 @@ def build_product_dfa(dfas):
     return product_dfa
 
 
-def resolve_formulas(args):
+def resolve_formulas(args, dataset=None):
     if args.spec is not None and (args.ltl_formula is not None or args.ltl_formulas is not None):
         raise ValueError("Provide either --spec or --ltl_formula(s), not both.")
 
     if args.spec is not None:
-        if args.env not in {"cb", "nrm_nav"}:
-            raise ValueError(
-                f"--spec runtime support is currently only available for cb/nrm_nav, got env={args.env}"
-            )
-        spec = get_spec(args.env, args.spec)
-        return list(spec["formulas"])
+        if args.env in {"cb", "nrm_nav"}:
+            spec = get_spec(args.env, args.spec)
+            return list(spec["formulas"])
+        if args.env == "frozenlake":
+            if dataset is not None and hasattr(dataset.env, "hole_state_ids"):
+                return build_frozenlake_formulas(
+                    args.spec,
+                    dataset.env.hole_state_ids,
+                    dataset.env.goal_state_ids,
+                    include_position_props=getattr(args, "frozenlake_use_position_props", False),
+                )
+            spec = get_spec(args.env, args.spec)
+            return list(spec["formulas"])
+        raise ValueError(
+            "--spec runtime support is currently only available for cb/nrm_nav/frozenlake, "
+            f"got env={args.env}"
+        )
 
     if args.ltl_formulas is not None:
         return list(args.ltl_formulas)
@@ -161,7 +174,7 @@ def build_adapter_and_dfa(args, dataset):
         use_stop_token=True,
     )
 
-    formulas = resolve_formulas(args)
+    formulas = resolve_formulas(args, dataset=dataset)
 
     dfas = [
         adapter.create_dfa_from_ltl(f, f"cb_constraint_{i}", use_safe_dfa=args.use_safe_dfa)
@@ -245,6 +258,23 @@ def build_model(args, dataset, vocab_size):
 
 
 def build_dataset(args):
+    if args.env == "frozenlake":
+        num_episodes = int(args.num_episodes)
+        max_steps = int(args.max_steps)
+        if num_episodes == 2000:
+            num_episodes = 5000
+        if max_steps == 200:
+            max_steps = 100
+        return FrozenLakeSequenceDataset(
+            num_episodes=num_episodes,
+            max_steps=max_steps,
+            sequence_length=args.block_size,
+            discount=args.discount,
+            seed=args.seed,
+            map_size=args.frozenlake_map_size,
+            is_slippery=args.frozenlake_is_slippery,
+            policy_mix=args.policy_mix,
+        )
     if args.env == "cb":
         return CBSequenceDataset(
             num_episodes=args.num_episodes,
@@ -391,7 +421,7 @@ def train(args, return_state=False):
         return model, adapter, deep_dfa, dataset, raw_dfa
 
     spec_name = spec_label_from_args(args)
-    formulas = resolve_formulas(args)
+    formulas = resolve_formulas(args, dataset=dataset)
     dfa_summary = summarize_dfa_bundle(
         raw_dfa, spec_name=spec_name, formulas=formulas, dfa_mode=args.dfa_mode
     )
@@ -410,6 +440,9 @@ def train(args, return_state=False):
             "satisfaction_soft_mean": None,
             "violation_rate_episode": None,
             "violation_rate_step": None,
+            "goal_rate": None,
+            "bomb_hit_rate": None,
+            "hazard_hit_rate": None,
             "decoding_mode": None,
             "beam_width": None,
             "model_type": "tt",
@@ -443,7 +476,13 @@ def train(args, return_state=False):
         metrics["run_id"] = run_id
         metrics["timestamp_utc"] = ts
 
-    save_evaluation_artifacts(args.run_dir, metrics, dfa_summary, rollout_stats)
+    save_evaluation_artifacts(
+        args.run_dir,
+        metrics,
+        dfa_summary,
+        rollout_stats,
+        save_plots=getattr(args, "save_plots", False),
+    )
     print(f"Saved run artifacts to {args.run_dir}")
 
 
@@ -469,9 +508,19 @@ def evaluate_model(model, adapter, dfa, dataset, batch_size=64, append_end_token
         adapter=adapter,
         raw_dfa=dfa,
         dataset=dataset,
-        env_name=getattr(dataset, "env_name", "nrm_nav")
-        if getattr(dataset, "env_name", None) is not None
-        else ("nrm_nav" if isinstance(dataset.env, NRMSafetyNavEnv) else "cb"),
+        env_name=(
+            getattr(dataset, "env_name")
+            if getattr(dataset, "env_name", None) is not None
+            else (
+                "nrm_nav"
+                if isinstance(dataset.env, NRMSafetyNavEnv)
+                else (
+                    "frozenlake"
+                    if "frozenlake" in dataset.env.__class__.__name__.lower()
+                    else "cb"
+                )
+            )
+        ),
         spec_name=spec_name,
         seed=0,
         checkpoint_path=None,
@@ -730,7 +779,7 @@ def get_arg_parser(add_help=True):
     p.add_argument("--discount", type=float, default=0.99)
     p.add_argument("--stochastic", action="store_true")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--env", type=str, choices=["cb", "nrm_nav"], default="cb")
+    p.add_argument("--env", type=str, choices=["cb", "nrm_nav", "frozenlake"], default="cb")
     p.add_argument(
         "--smoke",
         action="store_true",
@@ -753,13 +802,43 @@ def get_arg_parser(add_help=True):
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--grad_clip", type=float, default=1.0)
 
+    p.add_argument(
+        "--frozenlake_map_size",
+        type=str,
+        choices=["4x4", "8x8"],
+        default="4x4",
+        help="FrozenLake map size (used when --env frozenlake).",
+    )
+    p.add_argument(
+        "--frozenlake_is_slippery",
+        action="store_true",
+        help="Enable slippery stochastic transitions in FrozenLake.",
+    )
+    p.add_argument(
+        "--policy_mix",
+        type=float,
+        default=0.0,
+        help=(
+            "For FrozenLake dataset generation, fraction of scripted-policy episodes. "
+            "0.0=random only, 1.0=scripted only."
+        ),
+    )
+    p.add_argument(
+        "--frozenlake_use_position_props",
+        action="store_true",
+        help="Enable FrozenLake position-bin proposition expansion when building spec formulas.",
+    )
+
     p.add_argument("--ltl_formula", type=str, default=None)
     p.add_argument("--ltl_formulas", type=str, nargs="+", default=None, help="List of LTL formulas")
     p.add_argument(
         "--spec",
         type=str,
         default=None,
-        help="Named spec preset for the selected env. Runtime support currently: cb, nrm_nav.",
+        help=(
+            "Named spec preset for the selected env. Runtime support currently: "
+            "cb, nrm_nav, frozenlake."
+        ),
     )
     p.add_argument(
         "--dfa_mode",
@@ -888,6 +967,11 @@ def get_arg_parser(add_help=True):
         type=str,
         default=None,
         help="Output directory for DFA inspection artifacts (summary, DOT, optional PNG).",
+    )
+    p.add_argument(
+        "--save_plots",
+        action="store_true",
+        help="Save evaluation plots under <run_dir>/plots/.",
     )
 
     return p

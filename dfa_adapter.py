@@ -24,6 +24,12 @@ def get_num_bins_per_dim_for_env(env_name, observation_bins, action_bins):
     if env_name == "nrm_nav":
         # last dim stores cost in {0, 1}
         return [int(observation_bins), int(action_bins), 1, 2]
+    if env_name == "frozenlake":
+        # last dim stores hole cost in {0, 1}
+        return [int(observation_bins), int(action_bins), 1, 2]
+    if env_name == "antmaze":
+        # offline AntMaze tokenization stores binary safety cost in the last dim
+        return [int(observation_bins), int(action_bins), 1, 2]
     raise ValueError(f"Unsupported env '{env_name}' for token schema.")
 
 

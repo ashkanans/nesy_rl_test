@@ -101,7 +101,7 @@ def main():
     run_dir, run_id, ts = ensure_run_dir(args.env, run_dir=args.run_dir, base_dir=args.base_runs_dir)
 
     spec_name = spec_label_from_args(args)
-    formulas = resolve_formulas(args)
+    formulas = resolve_formulas(args, dataset=dataset)
     dfa_summary = summarize_dfa_bundle(raw_dfa, spec_name=spec_name, formulas=formulas, dfa_mode=args.dfa_mode)
 
     checkpoint_path = args.checkpoint
@@ -141,7 +141,13 @@ def main():
     metrics["run_id"] = run_id
     metrics["timestamp_utc"] = ts
 
-    save_evaluation_artifacts(run_dir, metrics, dfa_summary, rollout_stats)
+    save_evaluation_artifacts(
+        run_dir,
+        metrics,
+        dfa_summary,
+        rollout_stats,
+        save_plots=getattr(args, "save_plots", False),
+    )
     print(f"Saved evaluation artifacts to {run_dir}")
 
 

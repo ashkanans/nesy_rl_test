@@ -66,7 +66,7 @@ def unsafe_fraction(ds, unsafe_ids, sample_limit=200):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--env", type=str, choices=["cb", "nrm_nav"], default="nrm_nav")
+    parser.add_argument("--env", type=str, choices=["cb", "nrm_nav", "frozenlake"], default="nrm_nav")
     parser.add_argument("--spec", type=str, default=None)
     parser.add_argument("--ltl_formulas", type=str, nargs="+", default=None)
     parser.add_argument(
@@ -117,6 +117,10 @@ def main():
     dummy.inspect_dfa_only = False
     dummy.save_path = "cb_runs"
     dummy.inspect_output_dir = None
+    dummy.frozenlake_map_size = "4x4"
+    dummy.frozenlake_is_slippery = False
+    dummy.policy_mix = 0.0
+    dummy.frozenlake_use_position_props = False
 
     ds = build_dataset(dummy)
     adapter, _, raw_dfa = build_adapter_and_dfa(dummy, ds)

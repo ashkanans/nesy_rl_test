@@ -65,3 +65,30 @@ def test_summarize_dfa_bundle_includes_spec_metadata():
 def test_spec_label_from_args_prefers_named_spec():
     args = SimpleNamespace(spec="avoid_unsafe", ltl_formulas=["F(s0_bin2)"], ltl_formula=None)
     assert spec_label_from_args(args) == "avoid_unsafe"
+
+
+def test_apply_smoke_mode_sets_frozenlake_defaults():
+    args = SimpleNamespace(
+        smoke=True,
+        env="frozenlake",
+        num_episodes=9999,
+        max_steps=999,
+        epochs=10,
+        block_size=128,
+        batch_size=64,
+        n_layer=4,
+        n_head=4,
+        n_embd=128,
+        eval_num_episodes=99,
+        beam_width=16,
+        plan_horizon=8,
+        policy_mix=0.6,
+        spec=None,
+        ltl_formula=None,
+        ltl_formulas=None,
+    )
+    out = apply_smoke_mode(args)
+    assert out.spec == "reach_goal_while_avoid_holes"
+    assert out.num_episodes <= 200
+    assert out.max_steps <= 30
+    assert out.policy_mix == 0.0
