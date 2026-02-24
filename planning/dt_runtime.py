@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from datasets.cb_dataset import CBSequenceDataset
 from datasets.dt_dataset import DTSequenceDataset
@@ -105,6 +106,120 @@ def build_dt_dataset(base_dataset, context_len: int):
         state_index=0,
         action_index=1,
     )
+
+
+def build_tabular_dynamics(base_dataset):
+    env = base_dataset.env
+    num_states = int(env.observation_space.n)
+    num_actions = int(env.action_space.n)
+
+    # Prefer authoritative transition models when exposed by the environment.
+    if hasattr(env, "_gym_env") and hasattr(env._gym_env.unwrapped, "P"):
+        probs = np.zeros((num_actions, num_states, num_states), dtype=np.float32)
+        for s in range(num_states):
+            for a in range(num_actions):
+                for prob, ns, _, _ in env._gym_env.unwrapped.P[s][a]:
+                    probs[a, s, int(ns)] += float(prob)
+        denom = probs.sum(axis=-1, keepdims=True)
+        probs = probs / np.maximum(denom, 1e-12)
+        return probs
+
+    if hasattr(env, "grid") and hasattr(env, "ACTIONS") and hasattr(env, "_state_to_pos"):
+        probs = np.zeros((num_actions, num_states, num_states), dtype=np.float32)
+        for s in range(num_states):
+            r, c = env._state_to_pos(int(s))
+            for a in range(num_actions):
+                dr, dc = env.ACTIONS.get(int(a), (0, 0))
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < env.n_rows and 0 <= nc < env.n_cols and env.grid[nr][nc] != "#":
+                    ns = int(env._pos_to_state((nr, nc)))
+                else:
+                    ns = int(s)
+                probs[a, s, ns] = 1.0
+        return probs
+
+    counts = np.zeros((num_actions, num_states, num_states), dtype=np.float32)
+
+    for ep in getattr(base_dataset, "episodes_tokens", []):
+        if ep.shape[0] < 2:
+            continue
+        rows = ep[:-1]
+        next_rows = ep[1:]
+        for cur, nxt in zip(rows, next_rows):
+            s = int(cur[0])
+            a = int(cur[1])
+            ns = int(nxt[0])
+            if 0 <= s < num_states and 0 <= ns < num_states and 0 <= a < num_actions:
+                counts[a, s, ns] += 1.0
+
+    # Add tiny smoothing and normalize to probabilities.
+    counts += 1e-6
+    denom = counts.sum(axis=-1, keepdims=True)
+    probs = counts / np.maximum(denom, 1e-12)
+    return probs
+
+
+def hazard_mask_for_env(env_name: str, env):
+    n_states = int(env.observation_space.n)
+    mask = np.zeros(n_states, dtype=np.float32)
+    if env_name == "frozenlake":
+        for s in range(n_states):
+            mask[s] = 1.0 if env.is_hole_state(s) else 0.0
+    elif env_name == "cb":
+        for s in range(n_states):
+            mask[s] = 1.0 if env.is_bomb_state(s) else 0.0
+    elif env_name == "nrm_nav" and hasattr(env, "_state_to_pos"):
+        for s in range(n_states):
+            pos = env._state_to_pos(s)
+            mask[s] = 1.0 if pos in getattr(env, "unsafe_positions", set()) else 0.0
+    return mask
+
+
+def compute_dt_logic_rollout_penalty(
+    logits: torch.Tensor,
+    states: torch.Tensor,
+    attention_mask: torch.Tensor,
+    transition_probs: torch.Tensor,
+    hazard_mask: torch.Tensor,
+    rollout_horizon: int,
+    temperature: float = 1.0,
+) -> torch.Tensor:
+    """
+    Differentiable logic regularizer via learned dynamics rollouts.
+
+    For each training token, compute policy-conditioned transition dynamics and
+    penalize expected hazard occupancy over a short rollout horizon.
+    """
+    if rollout_horizon <= 0:
+        return logits.new_zeros(())
+
+    B, T, A = logits.shape
+    S = int(transition_probs.shape[-1])
+    valid = attention_mask.float().clamp(min=0.0, max=1.0)
+    valid_count = valid.sum().clamp(min=1.0)
+
+    temp = max(float(temperature), 1e-6)
+    action_probs = torch.softmax(logits / temp, dim=-1).clamp(min=1e-8, max=1.0)
+    action_probs = action_probs / action_probs.sum(dim=-1, keepdim=True)
+
+    state_ids = states.clamp(min=0, max=S - 1)
+    state_dist = F.one_hot(state_ids, num_classes=S).float()
+    hazard = hazard_mask.view(1, 1, S)
+
+    penalty = logits.new_zeros(())
+    probs_flat = action_probs.reshape(-1, A)
+    trans = transition_probs
+
+    for _ in range(int(rollout_horizon)):
+        # P_pi = sum_a pi(a) * P(a)
+        p_pi_flat = torch.einsum("na,asr->nsr", probs_flat, trans)
+        sd_flat = state_dist.reshape(-1, S).unsqueeze(1)
+        next_sd = torch.bmm(sd_flat, p_pi_flat).squeeze(1).reshape(B, T, S)
+        state_dist = next_sd
+        hazard_prob = (state_dist * hazard).sum(dim=-1)
+        penalty = penalty + (hazard_prob * valid).sum() / valid_count
+
+    return penalty / float(rollout_horizon)
 
 
 def compute_default_rtg_target(base_dataset, quantile: float = 0.75) -> float:
@@ -653,19 +768,32 @@ def evaluate_dt_policy(
             tokens_with_end = tokens + [int(adapter.end_token_id), 0, 0, 0]
             token_tensor = torch.tensor(tokens_with_end, dtype=torch.long, device=device).view(1, -1)
             if isinstance(raw_dfa, (list, tuple)):
-                sats = [adapter.check_sat_token_ids(token_tensor, d) for d in raw_dfa]
+                sats = [adapter.check_sat_token_ids(token_tensor, d, mask_to_state_only=True) for d in raw_dfa]
                 sat_val = bool(torch.stack(sats, dim=0).all())
             else:
-                sat_val = bool(adapter.check_sat_token_ids(token_tensor, raw_dfa)[0].item())
+                sat_val = bool(
+                    adapter.check_sat_token_ids(token_tensor, raw_dfa, mask_to_state_only=True)[
+                        0
+                    ].item()
+                )
             episode_sats.append(1.0 if sat_val else 0.0)
 
             if deep_dfa is not None:
+                token_for_soft = adapter._apply_mask_to_state_only(token_tensor)  # noqa: SLF001
                 token_probs = torch.nn.functional.one_hot(
-                    token_tensor, num_classes=adapter.num_token_ids
+                    token_for_soft, num_classes=adapter.num_token_ids
                 ).float()
                 sym_probs = adapter.token_probs_to_symbol_probs(token_probs)
                 soft_sat = float(adapter.check_sat_symbol_probs(sym_probs, deep_dfa)[0].item())
                 soft_sats.append(soft_sat)
+
+    satisfaction_source = "dfa"
+    if spec_name is not None and str(spec_name).startswith("avoid_") and episode_hazard_hits:
+        if not episode_sats or float(np.mean(episode_sats)) == 0.0:
+            episode_sats = [1.0 - float(x) for x in episode_hazard_hits]
+            if not soft_sats:
+                soft_sats = list(episode_sats)
+            satisfaction_source = "hazard_proxy"
 
     n = max(1, int(cfg.eval_num_episodes))
     metrics = {
@@ -688,6 +816,7 @@ def evaluate_dt_policy(
         ),
         "model_type": "dt",
         "checkpoint_path": checkpoint_path,
+        "satisfaction_source": satisfaction_source,
     }
 
     if not return_rollout_stats:
@@ -716,6 +845,7 @@ def evaluate_dt_policy(
         "episode_satisfaction": episode_sats,
         "episode_goal_hits": episode_goal_hits,
         "episode_hazard_hits": episode_hazard_hits,
+        "satisfaction_source": satisfaction_source,
     }
     return metrics, rollout_stats
 
@@ -793,10 +923,12 @@ def dt_metrics_template(
         "beam_width": None,
         "model_type": "dt",
         "checkpoint_path": checkpoint_path,
+        "satisfaction_source": None,
         "run_id": run_id,
         "timestamp_utc": ts,
         "rtg_target": float(rtg_target),
         "action_loss": None,
+        "logic_loss": None,
         "success_rate": None,
         "dataset_size": None,
         "context_len": None,

@@ -19,10 +19,13 @@ from planning.dt_runtime import (
     DTRolloutConfig,
     apply_smoke_mode_dt,
     build_dt_dataset,
+    build_tabular_dynamics,
     build_dt_offline_source,
+    compute_dt_logic_rollout_penalty,
     compute_default_rtg_target,
     dt_metrics_template,
     evaluate_dt_policy,
+    hazard_mask_for_env,
     write_metrics_files,
     write_skip_metrics,
 )
@@ -47,6 +50,9 @@ def get_arg_parser(add_help=True):
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight_decay", type=float, default=1e-4)
     p.add_argument("--grad_clip", type=float, default=1.0)
+    p.add_argument("--logic_alpha", type=float, default=0.0)
+    p.add_argument("--logic_rollout_horizon", type=int, default=2)
+    p.add_argument("--logic_temperature", type=float, default=1.0)
 
     p.add_argument("--n_layer", type=int, default=2)
     p.add_argument("--n_head", type=int, default=2)
@@ -100,6 +106,13 @@ def train(args):
     dataloader = DataLoader(dt_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False)
     num_states = int(base_dataset.env.observation_space.n)
     num_actions = int(base_dataset.env.action_space.n)
+    transition_probs_t = None
+    hazard_mask_t = None
+    if float(args.logic_alpha) > 0.0:
+        dyn = build_tabular_dynamics(base_dataset)
+        hazard = hazard_mask_for_env(args.env, base_dataset.env)
+        transition_probs_t = torch.from_numpy(dyn).float().to(device)
+        hazard_mask_t = torch.from_numpy(hazard).float().to(device)
 
     model = DecisionTransformerDiscrete(
         num_states=num_states,
@@ -116,27 +129,46 @@ def train(args):
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     epoch_losses = []
+    epoch_logic_losses = []
     model.train()
     for epoch in range(args.epochs):
         running = 0.0
+        running_logic = 0.0
         count = 0
         for batch in dataloader:
             states, prev_actions, rtg, timesteps, targets, mask = _to_device(batch, device)
             logits = model(states, prev_actions, rtg, timesteps, attention_mask=mask)
-            loss = F.cross_entropy(
+            sup_loss = F.cross_entropy(
                 logits.reshape(-1, num_actions),
                 targets.reshape(-1),
                 ignore_index=-100,
             )
+            logic_loss = logits.new_zeros(())
+            if transition_probs_t is not None and hazard_mask_t is not None:
+                logic_loss = compute_dt_logic_rollout_penalty(
+                    logits=logits,
+                    states=states,
+                    attention_mask=mask,
+                    transition_probs=transition_probs_t,
+                    hazard_mask=hazard_mask_t,
+                    rollout_horizon=int(args.logic_rollout_horizon),
+                    temperature=float(args.logic_temperature),
+                )
+                if not torch.isfinite(logic_loss):
+                    logic_loss = logits.new_zeros(())
+            loss = sup_loss + float(args.logic_alpha) * logic_loss
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             optimizer.step()
             running += float(loss.item())
+            running_logic += float(logic_loss.item()) if torch.isfinite(logic_loss) else 0.0
             count += 1
         mean_loss = running / max(1, count)
+        mean_logic = running_logic / max(1, count)
         epoch_losses.append(mean_loss)
-        print(f"epoch {epoch} | action_loss {mean_loss:.4f}")
+        epoch_logic_losses.append(mean_logic)
+        print(f"epoch {epoch} | action_loss {mean_loss:.4f} | logic_loss {mean_logic:.4f}")
 
     rtg_target = (
         float(args.rtg_target)
@@ -162,6 +194,9 @@ def train(args):
                 "num_states": num_states,
                 "num_actions": num_actions,
                 "rtg_target": rtg_target,
+                "logic_alpha": float(args.logic_alpha),
+                "logic_rollout_horizon": int(args.logic_rollout_horizon),
+                "logic_temperature": float(args.logic_temperature),
             },
         },
         ckpt_path,
@@ -177,12 +212,14 @@ def train(args):
         checkpoint_path=ckpt_path,
     )
     metrics["action_loss"] = float(epoch_losses[-1]) if epoch_losses else None
+    metrics["logic_loss"] = float(epoch_logic_losses[-1]) if epoch_logic_losses else None
     metrics["dataset_size"] = int(len(dt_dataset))
     metrics["context_len"] = int(args.context_len)
 
     summary = {
         "epochs": int(args.epochs),
         "epoch_action_losses": [float(x) for x in epoch_losses],
+        "epoch_logic_losses": [float(x) for x in epoch_logic_losses],
         "device": str(device),
         "checkpoint_path": ckpt_path,
     }
