@@ -9,7 +9,7 @@ import warnings
 import numpy as np
 
 from antmaze_dataset import load_antmaze_dataset
-from eval_runtime import apply_smoke_mode, ensure_run_dir, write_json
+from eval_runtime import apply_smoke_mode, ensure_run_dir, set_global_seed, write_json
 
 
 def _parse_protocol(path):
@@ -158,6 +158,7 @@ def main():
     parser = parse_args()
     args = parser.parse_args()
     args = apply_smoke_mode(args)
+    set_global_seed(args.seed)
 
     if args.checkpoint is None:
         if not (args.allow_train_fallback or args.smoke):

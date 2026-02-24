@@ -46,6 +46,25 @@ def set_global_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    # Best-effort deterministic configuration across training/evaluation entrypoints.
+    try:
+        torch.use_deterministic_algorithms(True)
+    except Exception as exc:
+        warnings.warn(
+            f"Could not enable strict deterministic algorithms ({exc}); falling back to warn-only mode.",
+            RuntimeWarning,
+        )
+        try:
+            torch.use_deterministic_algorithms(True, warn_only=True)
+        except Exception as inner_exc:
+            warnings.warn(
+                f"Could not enable deterministic algorithms in warn-only mode ({inner_exc}).",
+                RuntimeWarning,
+            )
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 
 def apply_smoke_mode(args):
