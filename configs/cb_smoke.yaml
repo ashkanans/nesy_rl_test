@@ -1,0 +1,6 @@
+env: cb
+smoke: true
+seed: 0
+spec: avoid_single_bomb_22
+use_safe_dfa: true
+decoding_mode: greedy

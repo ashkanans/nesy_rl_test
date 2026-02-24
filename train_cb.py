@@ -18,12 +18,15 @@ sys.path.insert(0, str(REPO_ROOT / "suffix-prediction"))
 
 import FiniteStateMachine as FSM
 from FiniteStateMachine import DFA
-from trajectory.models.transformers import GPT
 
-from cb_dataset import CBSequenceDataset
+from datasets.cb_dataset import CBSequenceDataset
 from dfa_adapter import TTDFAAdapter, get_num_bins_per_dim_for_env
 from dfa_utils import export_dfa_artifacts
-from eval_runtime import (
+from datasets.frozenlake_dataset import FrozenLakeSequenceDataset
+from datasets.nrm_nav_dataset import NRMSafetySequenceDataset
+from envs.nrm_nav_env import NRMSafetyNavEnv
+from models.tt_model import build_tt_model
+from planning.eval_runtime import (
     DecodingConfig,
     apply_smoke_mode,
     ensure_run_dir,
@@ -33,10 +36,7 @@ from eval_runtime import (
     spec_label_from_args,
     summarize_dfa_bundle,
 )
-from frozenlake_dataset import FrozenLakeSequenceDataset
 from logic_loss_tt import LogicLossModule
-from nrm_nav_dataset import NRMSafetySequenceDataset
-from nrm_nav_env import NRMSafetyNavEnv
 from specs import get_spec
 from specs.frozenlake_specs import build_frozenlake_formulas
 
@@ -230,31 +230,7 @@ def build_adapter_and_dfa(args, dataset):
 
 
 def build_model(args, dataset, vocab_size):
-    """
-    Build a GPT model configured for the Colour Bomb dataset and adapter.
-    """
-
-    class Cfg:
-        pass
-
-    cfg = Cfg()
-    cfg.vocab_size = vocab_size
-    cfg.block_size = args.block_size
-    cfg.n_layer = args.n_layer
-    cfg.n_head = args.n_head
-    cfg.n_embd = args.n_embd
-    cfg.observation_dim = dataset.observation_dim
-    cfg.action_dim = dataset.action_dim
-    cfg.transition_dim = dataset.joined_dim
-    cfg.action_weight = args.action_weight
-    cfg.reward_weight = args.reward_weight
-    cfg.value_weight = args.value_weight
-    cfg.embd_pdrop = args.embd_pdrop
-    cfg.resid_pdrop = args.resid_pdrop
-    cfg.attn_pdrop = args.attn_pdrop
-
-    model = GPT(cfg).to(device)
-    return model
+    return build_tt_model(args=args, dataset=dataset, vocab_size=vocab_size, device=device)
 
 
 def build_dataset(args):
@@ -982,5 +958,9 @@ def parse_args():
 
 
 if __name__ == "__main__":
+    warnings.warn(
+        "train_cb.py is deprecated. Use scripts/train.py instead.",
+        DeprecationWarning,
+    )
     args = parse_args()
     train(args)

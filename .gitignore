@@ -8,6 +8,8 @@ venv/
 venv*/
 env/
 env*/
+!envs/
+!envs/**
 .env/
 .venv/
 .venv*/

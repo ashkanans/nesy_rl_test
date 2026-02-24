@@ -1,0 +1,6 @@
+env: nrm_nav
+smoke: true
+seed: 0
+spec: avoid_state_11
+use_safe_dfa: true
+decoding_mode: greedy

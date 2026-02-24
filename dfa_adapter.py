@@ -3,6 +3,8 @@ import warnings
 from pathlib import Path
 
 import torch
+from logic.token_schema import get_num_bins_per_dim as schema_num_bins_per_dim
+from logic.token_schema import get_schema_for_env
 
 REPO_ROOT = Path(__file__).parent
 NESY_PATH = REPO_ROOT / "suffix-prediction"
@@ -19,18 +21,8 @@ else:
 
 def get_num_bins_per_dim_for_env(env_name, observation_bins, action_bins):
     """Canonical token-schema bins per transition dimension for each supported env."""
-    if env_name == "cb":
-        return [int(observation_bins), int(action_bins), 1, 1]
-    if env_name == "nrm_nav":
-        # last dim stores cost in {0, 1}
-        return [int(observation_bins), int(action_bins), 1, 2]
-    if env_name == "frozenlake":
-        # last dim stores hole cost in {0, 1}
-        return [int(observation_bins), int(action_bins), 1, 2]
-    if env_name == "antmaze":
-        # offline AntMaze tokenization stores binary safety cost in the last dim
-        return [int(observation_bins), int(action_bins), 1, 2]
-    raise ValueError(f"Unsupported env '{env_name}' for token schema.")
+    schema = get_schema_for_env(env_name)
+    return schema_num_bins_per_dim(schema, observation_bins, action_bins)
 
 
 def get_end_token_id_from_num_bins(num_bins):

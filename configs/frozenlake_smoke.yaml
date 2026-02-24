@@ -1,0 +1,9 @@
+env: frozenlake
+smoke: true
+seed: 0
+frozenlake_map_size: 4x4
+frozenlake_is_slippery: false
+policy_mix: 0.0
+spec: reach_goal_while_avoid_holes
+use_safe_dfa: true
+decoding_mode: greedy

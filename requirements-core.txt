@@ -15,6 +15,7 @@ networkx==3.4.2
 numpy==1.26.4
 pre-commit==4.2.0
 pythomata==0.3.2
+PyYAML==6.0.2
 ruff==0.9.10
 sympy==1.14.0
 torch==2.3.1

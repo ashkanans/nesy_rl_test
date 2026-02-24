@@ -1,24 +1,29 @@
 # Neuro-Symbolic Offline RL
 
-This repository contains experiments for logic-regularized offline RL and sequence modeling:
+This repository contains logic-regularized offline sequence RL code (Trajectory Transformer + DFA/LTLf tooling) for:
 
-- Trajectory Transformer (TT) + logic loss (`train_cb.py`, `evaluate.py`, `run_baselines.py`)
-- Safety/grid benchmarks in this branch: ColourBomb (`cb`) and NRM navigation (`nrm_nav`)
-- External benchmark stacks included in-tree:
-  - `trajectory-transformer/` (AntMaze via D4RL)
-  - `implicit_q_learning/` (AntMaze IQL baseline)
-  - `suffix-prediction/` and `nesy-suffix-prediction-dfa/` (DFA/LTL tooling)
+- `cb` (ColourBomb)
+- `nrm_nav` (NRM navigation)
+- `frozenlake`
+- `antmaze` (dataset/protocol tooling; optional dependency stack)
 
-## Benchmark support in `monolith`
+## Repository Layout
 
-- ColourBomb: supported (`train_cb.py`, `evaluate.py`)
-- NRM nav: supported (`train_cb.py`, `evaluate.py`)
-- AntMaze: supported via `trajectory-transformer/` scripts (requires D4RL/MuJoCo stack)
-- FrozenLake: not yet wired to a training/evaluation pipeline in this branch
+- `scripts/`: canonical train/eval/baseline entrypoints
+- `envs/`: benchmark environment wrappers
+- `datasets/`: offline dataset generators/loaders
+- `logic/`: DFA adapter and canonical token schema
+- `planning/`: rollout evaluation and decoding runtime
+- `configs/`: lightweight YAML presets
 
-## 1) Setup
+Legacy root entrypoints are still available as deprecated compatibility shims:
+- `train_cb.py`
+- `evaluate.py`
+- `run_baselines.py`
 
-### Option A: `venv` (recommended for this repo)
+## Setup
+
+### Option A: venv
 
 ```bash
 git clone https://github.com/ashkanans/nesy_rl_test.git
@@ -26,12 +31,10 @@ cd nesy_rl_test
 
 python3 -m venv .venv
 source .venv/bin/activate
-
-# installs requirements in order: core -> env -> tt
 ./scripts/setup.sh
 ```
 
-### Option B: `conda`
+### Option B: conda
 
 ```bash
 git clone https://github.com/ashkanans/nesy_rl_test.git
@@ -44,196 +47,137 @@ conda activate nesy-rl
 
 ### Dependency split
 
-- `requirements-core.txt`: core ML + logic + test dependencies
-- `requirements-env.txt`: environment/rendering dependencies
-- `requirements-tt.txt`: trajectory-transformer editable install
-- `requirements.txt`: compatibility wrapper that includes all three files
+- `requirements-core.txt`: core ML/logic/test tooling
+- `requirements-env.txt`: env/render/plot tooling
+- `requirements-tt.txt`: editable `trajectory-transformer`
 
-### Setup script behavior
-
-- Script: `scripts/setup.sh`
-- Default order: `core -> env -> tt`
-- Idempotent: safe to rerun; it only revalidates/upgrades installed packages
-- Optional: `INSTALL_TT=0 ./scripts/setup.sh` to skip TT install
-
-## 2) Submodule initialization
-
-Run once after clone:
+## Submodules
 
 ```bash
 git submodule sync --recursive
 git submodule update --init --recursive
 ```
 
-Note: in this branch, the relevant code is already present as directories (`trajectory-transformer/`, `suffix-prediction/`, `nesy-suffix-prediction-dfa/`), so the commands above may be a no-op.
-
-## 3) Smoke checks
-
-From repo root:
+## Validation Commands
 
 ```bash
-# quick repository sanity checks (env + dataset + DFA adapter checks)
-python sanity_tests.py
-
-# pytest discovery smoke
 pytest -q
+python -m py_compile $(git ls-files '*.py')
 ```
 
-## 3.1) Formatting and lint
+## Canonical Entry Points
 
-```bash
-pre-commit run --all-files
-```
+- Train: `python scripts/train.py ...`
+- Evaluate: `python scripts/evaluate.py ...`
+- Baselines: `python scripts/run_baselines.py ...`
 
-## 4) Train + eval commands
+Optional root aliases:
+- `python train.py ...` (canonical alias for `scripts/train.py`)
+- `python train_cb.py ...` (deprecated)
+- `python evaluate.py ...` (deprecated)
+- `python run_baselines.py ...` (deprecated)
 
-All commands below are run from repository root unless specified.
+## Smoke Runs
 
-### 4.1 ColourBomb (`cb`)
-
-Smoke train:
-
-```bash
-python train_cb.py \
-  --env cb \
-  --seed 0 \
-  --num_episodes 64 \
-  --max_steps 30 \
-  --block_size 32 \
-  --batch_size 8 \
-  --epochs 1 \
-  --ltl_formula "G(!(s0_bin40))" \
-  --use_safe_dfa \
-  --save_path runs/cb_smoke
-```
-
-Smoke eval (includes train/val/test split and writes metrics):
-
-```bash
-python evaluate.py \
-  --env cb \
-  --seed 0 \
-  --num_episodes 64 \
-  --max_steps 30 \
-  --block_size 32 \
-  --batch_size 8 \
-  --epochs 1 \
-  --eval_every 1 \
-  --val_ratio 0.2 \
-  --test_ratio 0.2 \
-  --ltl_formula "G(!(s0_bin40))" \
-  --use_safe_dfa \
-  --out_dir runs/cb_eval_smoke
-```
-
-### 4.2 NRM nav (`nrm_nav`)
-
-Smoke train:
-
-```bash
-python train_cb.py \
-  --env nrm_nav \
-  --seed 0 \
-  --num_episodes 64 \
-  --max_steps 30 \
-  --block_size 32 \
-  --batch_size 8 \
-  --epochs 1 \
-  --ltl_formulas "G(!(s0_bin11))" "G(!(s0_bin18))" \
-  --dfa_mode product \
-  --use_safe_dfa \
-  --save_path runs/nrm_nav_smoke
-```
-
-Smoke eval:
-
-```bash
-python evaluate.py \
-  --env nrm_nav \
-  --seed 0 \
-  --num_episodes 64 \
-  --max_steps 30 \
-  --block_size 32 \
-  --batch_size 8 \
-  --epochs 1 \
-  --eval_every 1 \
-  --val_ratio 0.2 \
-  --test_ratio 0.2 \
-  --ltl_formulas "G(!(s0_bin11))" "G(!(s0_bin18))" \
-  --dfa_mode product \
-  --use_safe_dfa \
-  --out_dir runs/nrm_nav_eval_smoke
-```
-
-### 4.3 AntMaze (via `trajectory-transformer`)
-
-Prerequisite: D4RL + MuJoCo stack available for your environment.
+### ColourBomb
 
 Train:
 
 ```bash
-cd trajectory-transformer
-python scripts/train.py --dataset antmaze-umaze-v0
+python scripts/train.py \
+  --env cb \
+  --smoke \
+  --spec avoid_single_bomb_22 \
+  --use_safe_dfa \
+  --run_dir runs/cb/smoke_train
 ```
 
 Eval:
 
 ```bash
-cd trajectory-transformer
-python scripts/eval.py --dataset antmaze-umaze-v0 --episodes 5 --seed 0
+python scripts/evaluate.py \
+  --env cb \
+  --smoke \
+  --spec avoid_single_bomb_22 \
+  --use_safe_dfa \
+  --checkpoint runs/cb/smoke_train/cb_state_0.pt \
+  --run_dir runs/cb/smoke_eval
 ```
 
-### 4.4 FrozenLake
+### FrozenLake
 
-FrozenLake is currently not implemented as a train/eval benchmark in this branch (no `frozenlake` environment option in the root training/evaluation scripts yet).
-
-## 5) Expected output artifacts
-
-### Root TT + logic runs (`train_cb.py`, `evaluate.py`)
-
-- Training checkpoints:
-  - `runs/<name>/cb_state_<epoch>.pt`
-- Evaluation outputs:
-  - `runs/<name>/metrics.json`
-  - `runs/<name>/metrics.csv`
-  - `runs/<name>/satisfaction.png`
-- Optional dataset analysis:
-  - `<save_path>/dataset_analysis/summary.json`
-  - `<save_path>/dataset_analysis/*.png`
-
-### Baseline sweeps (`run_baselines.py`)
-
-- Per-baseline metrics:
-  - `<base_save_path>/<baseline_tag>/metrics.json`
-- Aggregated summary:
-  - `<base_save_path>/baseline_metrics.json`
-
-### AntMaze TT outputs (`trajectory-transformer`)
-
-- Training logs/checkpoints:
-  - `trajectory-transformer/logs/<dataset>/<exp_name>/state_*.pt`
-  - `trajectory-transformer/logs/<dataset>/<exp_name>/args.json`
-- Eval summary:
-  - `trajectory-transformer/logs/<dataset>/<exp_name>/<suffix>/eval.json`
-
-## 6) Minimal acceptance run (from clean env)
+Train:
 
 ```bash
-./scripts/setup.sh
-pytest -q
-
-python evaluate.py \
-  --env cb \
-  --seed 0 \
-  --num_episodes 64 \
-  --max_steps 30 \
-  --block_size 32 \
-  --batch_size 8 \
-  --epochs 1 \
-  --eval_every 1 \
-  --val_ratio 0.2 \
-  --test_ratio 0.2 \
-  --ltl_formula "G(!(s0_bin40))" \
+python scripts/train.py \
+  --env frozenlake \
+  --smoke \
+  --spec reach_goal_while_avoid_holes \
   --use_safe_dfa \
-  --out_dir runs/cb_eval_smoke
+  --frozenlake_map_size 4x4 \
+  --run_dir runs/frozenlake/smoke_train
 ```
+
+Eval:
+
+```bash
+python scripts/evaluate.py \
+  --env frozenlake \
+  --smoke \
+  --spec reach_goal_while_avoid_holes \
+  --use_safe_dfa \
+  --frozenlake_map_size 4x4 \
+  --checkpoint runs/frozenlake/smoke_train/cb_state_0.pt \
+  --run_dir runs/frozenlake/smoke_eval
+```
+
+### NRM Nav
+
+```bash
+python scripts/train.py \
+  --env nrm_nav \
+  --smoke \
+  --spec avoid_state_11 \
+  --use_safe_dfa \
+  --run_dir runs/nrm_nav/smoke_train
+```
+
+## Config Presets
+
+`scripts/train.py` accepts `--config` (`.yaml`, `.yml`, `.json`):
+
+```bash
+python scripts/train.py --config configs/cb_smoke.yaml --run_dir runs/cb/smoke_from_cfg
+python scripts/train.py --config configs/frozenlake_smoke.yaml --run_dir runs/frozenlake/smoke_from_cfg
+```
+
+CLI flags override config values.
+
+## Migration Notes
+
+- Old: `python train_cb.py ...`
+- New: `python scripts/train.py ...` (or `python train.py ...`)
+
+- Old: `python evaluate.py ...`
+- New: `python scripts/evaluate.py ...`
+
+- Old: `python run_baselines.py ...`
+- New: `python scripts/run_baselines.py ...`
+
+## Artifacts
+
+By default, runs are created under `runs/<env>/<UTC timestamp>/` unless `--run_dir` is provided.
+
+Per-run outputs:
+
+- `metrics.json`
+- `metrics.csv`
+- `dfa_summary.json`
+- `automaton_rollout_stats.json`
+- checkpoints (for train runs): `cb_state_<epoch>.pt`
+- optional plots under `plots/`
+
+## AntMaze
+
+AntMaze support is provided through `antmaze_dataset.py` and `antmaze_eval.py` with D4RL/MuJoCo dependencies.
+If your environment cannot install the AntMaze stack (e.g., Python/toolchain mismatch), run `cb`, `nrm_nav`, and `frozenlake` smoke paths first and keep AntMaze as a deferred benchmark step.
