@@ -56,8 +56,12 @@ The abstract should briefly summarize the contents of the paper in
 \section*{Introduction}
 \section{Background}
 \subsection{Linear Temporal Logic over finite traces}
+We evaluate each LTLf formula on finite trajectories with an explicit termination convention. Given a trace of symbols $\tau=(\sigma_1,\ldots,\sigma_T)$, the implementation consumes all symbols in order, then consumes exactly one explicit end symbol, and finally checks whether the resulting DFA state is accepting. This ``explicit-once'' termination rule is shared across dataset serialization, token-to-symbol mapping, DFA rollout, and logic-loss evaluation.
+
+In early prototypes, end handling was duplicated across modules (e.g., missing end tokens in some paths and extra appended ends in others). That inconsistency produced false unsatisfaction on traces that should satisfy simple safety formulas, and disagreement between hard evaluation and differentiable evaluation. We remove this failure mode by using one adapter-owned end-token convention across the full logic stack.
 
 \subsection{Reinforcement Learning}
+We study offline sequence RL with transformer policies trained on tokenized transitions. In this setting, logic satisfaction is treated as a first-class objective: we combine supervised next-token prediction with automata-based constraint feedback, and report both task performance and temporal-logic satisfaction metrics.
 
 \section{Related Works}
 
@@ -65,7 +69,45 @@ The abstract should briefly summarize the contents of the paper in
 \subsection{Implementation Details and Reproducibility}
 We standardize experiment execution via a unified command-line interface with smoke-mode validation before full runs. Each run produces structured artifacts, including metrics files, checkpoint snapshots, and diagnostic plots, and these artifacts are logged with run-level metadata for traceability. Dependencies are separated into core logic/modeling, transformer-specific, and benchmark-specific groups to reduce environment conflicts. We use unit tests and CI to validate environment wrappers, trajectory formatting, and automata-based satisfaction evaluation.
 
+\subsection{Finite-Trace Logic Stack}
+The adapter defines the authoritative token schema and end token identifier used by all components. Dataset generators create full episodes with exactly one end marker, while training windows may or may not contain that marker depending on where the window is sampled. Canonical satisfaction evaluation is defined on complete finite traces: traces without an end marker are treated as incomplete by default, and therefore unsatisfied in canonical mode.
+
+\subsection{Differentiable Satisfaction with Hard and Soft Traces}
+We expose two aligned interfaces for satisfaction checking. The hard path maps token IDs to symbol IDs and returns exact Boolean satisfaction per trajectory. The soft path maps token distributions to symbol distributions and returns acceptance probabilities for differentiable training. Let $p_t(k)$ be token probabilities at step $t$ and let $m_t(k)$ map token $k$ to symbol $s$ at position $t$. Then symbol probabilities are aggregated as $P_t(s)=\sum_{k:m_t(k)=s} p_t(k)$ before DeepDFA rollout. This keeps automata transitions differentiable while preserving consistency with exact DFA semantics; one-hot token distributions recover the hard-path result up to numerical tolerance.
+
 \section{Preliminary Experiments}
+\subsection{Task Specifications}
+We use environment-specific named specification presets to avoid fragile hand-written formulas in experiment scripts. Propositions follow a position-aware naming scheme such as \texttt{s0\_bin22} for state bins and \texttt{a0\_bin3} for action bins. Runtime preset selection is currently enabled for ColourBomb and NRM navigation; FrozenLake and AntMaze presets are compile-tested placeholders in Milestone 1.
+
+\begin{table}[t]
+\caption{Specification preset examples used in Milestone 1.}
+\label{tab:spec_presets}
+\centering
+\small
+\begin{tabular}{llll}
+\hline
+Env & Spec name & Formula & Purpose \\
+\hline
+ColourBomb & avoid\_single\_bomb\_22 & \texttt{G(!(s0\_bin22))} & avoid bomb state \\
+NRM nav & avoid\_unsafe & \texttt{G(!(s0\_bin11 | s0\_bin18))} & avoid unsafe cells \\
+FrozenLake & placeholder\_safe & \texttt{G(!(s0\_bin5))} & compile-tested placeholder \\
+AntMaze & placeholder\_reach & \texttt{F(s0\_bin2)} & compile-tested placeholder \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{DFA Inspection and Diagnostics}
+To audit specification complexity and debugging behavior, we export per-spec automata summaries and graph representations (\texttt{.dot}, optional \texttt{.png}). These utilities report state counts, accepting states, sink states, and symbol-set size, and are used to sanity-check compiled formulas before full training runs.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.9\linewidth}{
+\textbf{Placeholder figure.} Replace with exported automaton image, e.g., \texttt{paper/figures/dfa\_cb\_avoid\_single\_bomb\_22.png}.\\
+Suggested content: DFA compiled from a reach-while-avoid style finite-trace specification.
+}}
+\caption{Example DFA compiled from an environment preset specification.}
+\label{fig:dfa_inspection}
+\end{figure}
 \section{Conclusion}
 \begin{credits}
 \subsubsection{\ackname} A bold run-in heading in small font size at the end of the paper is
