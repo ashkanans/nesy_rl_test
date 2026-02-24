@@ -79,10 +79,17 @@ Hard pruning:
 
 Representative comparison with identical checkpoint and seed:
 
-- Greedy run: `runs/nrm_nav/reduction_greedy/metrics.json`
-  - `violation_rate = 1.0`, `satisfaction_rate = 0.0`
-- Constrained beam run: `runs/nrm_nav/reduction_constrained/metrics.json`
-  - `violation_rate = 0.0`, `satisfaction_rate = 1.0`
+- Greedy run: `runs/nrm_nav/server_reduction_greedy/metrics.json`
+  - `violation_rate = 1.0`, `satisfaction_rate = 0.0`, `runtime_sec = 0.6039965152740479`
+- Constrained beam run: `runs/nrm_nav/server_reduction_constrained/metrics.json`
+  - `violation_rate = 0.0`, `satisfaction_rate = 1.0`, `runtime_sec = 16.989497661590576`
+
+Matched rollout diagnostics:
+
+- `runs/nrm_nav/server_reduction_greedy/automaton_rollout_stats.json`
+  - `reject_sink_entries = 16`, `accept_count = 0`
+- `runs/nrm_nav/server_reduction_constrained/automaton_rollout_stats.json`
+  - `reject_sink_entries = 0`, `accept_count = 16`, `hard_prune_reject_sink = true`
 
 This example is used as a qualitative sanity check that automaton-aware decoding can alter rollout reliability under the same model weights.
 
@@ -109,3 +116,19 @@ Baseline sweep outputs:
 - `baseline_metrics.csv`
 
 These are designed for direct parsing in analysis scripts and for consistent aggregation across environments and decoding settings.
+
+## 4) Server artifact snapshot (Feb 24, 2026)
+
+Server smoke artifacts used for manuscript updates:
+
+- Repro snapshot: `runs/repro/`
+  - `run_utc.txt`, `python_version.txt`, `pip_freeze_torch.txt`, `nvidia_smi.txt`, `torch_env.txt`
+- CB smoke train/eval:
+  - `runs/cb/server_smoke_train/metrics.json`
+  - `runs/cb/server_smoke_eval/metrics.json`
+- NRM decoding comparison:
+  - `runs/nrm_nav/server_reduction_greedy/metrics.json`
+  - `runs/nrm_nav/server_reduction_constrained/metrics.json`
+- Baseline aggregation:
+  - `runs/nrm_nav/server_baselines_smoke/baseline_metrics.json`
+  - `runs/nrm_nav/server_baselines_smoke/baseline_metrics.csv`

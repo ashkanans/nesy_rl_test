@@ -143,3 +143,22 @@ All experiments use a unified command-line interface with fixed seed control and
 
 - Extend this map with benchmark-specific protocol cards (dataset version, seed grids, timeout policy, metric definitions).
 - Keep one checkpoint block per merged issue to maintain traceability from code to manuscript claims.
+
+## Server Runtime Evidence (Feb 24, 2026)
+
+Downloaded run artifacts include a concrete container execution snapshot under `runs/repro/`.
+
+- Timestamp: `runs/repro/run_utc.txt` shows `Tue Feb 24 11:49:15 UTC 2026`.
+- Python runtime: `runs/repro/python_version.txt` shows `Python 3.10.12`.
+- Torch package version: `runs/repro/pip_freeze_torch.txt` includes `torch==2.3.1+cu121`.
+- CUDA visibility in runtime check: `runs/repro/torch_env.txt` reports:
+  - `cuda_available True`
+  - `cuda_version 12.1`
+  - `cudnn_version 8902`
+  - `device_count 2`
+- Driver snapshot: `runs/repro/nvidia_smi.txt` records GPU visibility from inside container.
+
+Notes:
+
+- The recorded `torch_env.txt` line for torch version prints the `torch.version` module path instead of a version string due to the command used at run time.
+- For future snapshots, prefer `print(torch.__version__)` to capture a human-readable torch version directly in `torch_env.txt`.
