@@ -62,6 +62,8 @@ The abstract should briefly summarize the contents of the paper in
 \section{Related Works}
 
 \section{Method}
+\subsection{Implementation Details and Reproducibility}
+We standardize experiment execution via a unified command-line interface with smoke-mode validation before full runs. Each run produces structured artifacts, including metrics files, checkpoint snapshots, and diagnostic plots, and these artifacts are logged with run-level metadata for traceability. Dependencies are separated into core logic/modeling, transformer-specific, and benchmark-specific groups to reduce environment conflicts. We use unit tests and CI to validate environment wrappers, trajectory formatting, and automata-based satisfaction evaluation.
 
 \section{Preliminary Experiments}
 \section{Conclusion}
