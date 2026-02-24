@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import warnings
 from collections import deque
 from pathlib import Path
@@ -22,6 +23,16 @@ from trajectory.models.transformers import GPT
 from cb_dataset import CBSequenceDataset
 from dfa_adapter import TTDFAAdapter, get_num_bins_per_dim_for_env
 from dfa_utils import export_dfa_artifacts
+from eval_runtime import (
+    DecodingConfig,
+    apply_smoke_mode,
+    ensure_run_dir,
+    evaluate_policy_rollouts,
+    save_evaluation_artifacts,
+    set_global_seed,
+    spec_label_from_args,
+    summarize_dfa_bundle,
+)
 from logic_loss_tt import LogicLossModule
 from nrm_nav_dataset import NRMSafetySequenceDataset
 from nrm_nav_env import NRMSafetyNavEnv
@@ -103,7 +114,7 @@ def _inspect_dfa_artifacts(args, raw_dfa):
     inspect_dir = (
         args.inspect_output_dir
         if args.inspect_output_dir is not None
-        else os.path.join(args.save_path or "artifacts", "dfa_inspect")
+        else os.path.join((getattr(args, "run_dir", None) or args.save_path or "artifacts"), "dfa_inspect")
     )
     os.makedirs(inspect_dir, exist_ok=True)
 
@@ -258,6 +269,17 @@ def build_dataset(args):
 
 
 def train(args, return_state=False):
+    args = apply_smoke_mode(args)
+    set_global_seed(args.seed)
+    run_dir, run_id, ts = ensure_run_dir(
+        args.env,
+        run_dir=(getattr(args, "run_dir", None) or getattr(args, "save_path", None)),
+        base_dir=getattr(args, "base_runs_dir", "runs"),
+    )
+    args.run_dir = run_dir
+    args.save_path = run_dir  # backward-compatible alias
+    train_t0 = time.time()
+
     if getattr(args, "no_end_state_hack", False):
         warnings.warn(
             "--no_end_state_hack is deprecated; canonical explicit END semantics are always used.",
@@ -305,6 +327,7 @@ def train(args, return_state=False):
     )
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    latest_ckpt_path = None
 
     for epoch in range(args.epochs):
         model.train()
@@ -337,14 +360,14 @@ def train(args, return_state=False):
             )
         )
 
-        if args.save_path is not None:
-            os.makedirs(args.save_path, exist_ok=True)
-            ckpt_path = os.path.join(args.save_path, "cb_state_%d.pt" % epoch)
+        if args.run_dir is not None:
+            os.makedirs(args.run_dir, exist_ok=True)
+            ckpt_path = os.path.join(args.run_dir, f"cb_state_{epoch}.pt")
             torch.save(
                 {
                     "model_state_dict": model.state_dict(),
                     "config": {
-                        "vocab_size": adapter.num_token_ids,
+                        "vocab_size": adapter.num_token_ids - 1,
                         "block_size": args.block_size,
                         "n_layer": args.n_layer,
                         "n_head": args.n_head,
@@ -362,9 +385,66 @@ def train(args, return_state=False):
                 },
                 ckpt_path,
             )
+            latest_ckpt_path = ckpt_path
 
     if return_state:
         return model, adapter, deep_dfa, dataset, raw_dfa
+
+    spec_name = spec_label_from_args(args)
+    formulas = resolve_formulas(args)
+    dfa_summary = summarize_dfa_bundle(
+        raw_dfa, spec_name=spec_name, formulas=formulas, dfa_mode=args.dfa_mode
+    )
+
+    if getattr(args, "no_eval_after_train", False):
+        metrics = {
+            "return_mean": None,
+            "return_std": None,
+            "violation_rate": None,
+            "satisfaction_rate": None,
+            "runtime_sec": float(time.time() - train_t0),
+            "env": args.env,
+            "spec": spec_name,
+            "seed": int(args.seed),
+            "num_episodes": None,
+            "satisfaction_soft_mean": None,
+            "violation_rate_episode": None,
+            "violation_rate_step": None,
+            "decoding_mode": None,
+            "beam_width": None,
+            "model_type": "tt",
+            "checkpoint_path": latest_ckpt_path,
+            "run_id": run_id,
+            "timestamp_utc": ts,
+        }
+        rollout_stats = {"skipped": True, "reason": "no_eval_after_train"}
+    else:
+        decoding_cfg = DecodingConfig(
+            mode=args.decoding_mode,
+            beam_width=args.beam_width,
+            plan_horizon=args.plan_horizon,
+            sat_rerank_weight=args.sat_rerank_weight,
+            hard_prune_reject_sink=args.hard_prune_reject_sink,
+        )
+        metrics, rollout_stats = evaluate_policy_rollouts(
+            model=model,
+            adapter=adapter,
+            raw_dfa=raw_dfa,
+            dataset=dataset,
+            env_name=args.env,
+            spec_name=spec_name,
+            seed=args.seed,
+            checkpoint_path=latest_ckpt_path,
+            num_episodes=args.eval_num_episodes,
+            max_steps=args.eval_max_steps,
+            decoding_cfg=decoding_cfg,
+        )
+        metrics["runtime_sec"] = float(time.time() - train_t0)
+        metrics["run_id"] = run_id
+        metrics["timestamp_utc"] = ts
+
+    save_evaluation_artifacts(args.run_dir, metrics, dfa_summary, rollout_stats)
+    print(f"Saved run artifacts to {args.run_dir}")
 
 
 def _append_end_token(tensor_batch, adapter, append_flag):
@@ -377,113 +457,28 @@ def _append_end_token(tensor_batch, adapter, append_flag):
 
 
 def evaluate_model(model, adapter, dfa, dataset, batch_size=64, append_end_token=False):
-    """
-    Simple evaluation: supervised loss and DFA satisfaction rate on a dataset.
-
-    For nrm_nav, also reports additional safety and reward metrics:
-      - ground-truth vs predicted unsafe-state rates (using fixed unsafe IDs),
-      - ground-truth DFA satisfaction rate,
-      - dataset episode-level average return and unsafe episode rate.
-    """
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False)
-    model.eval()
-    total_loss = 0.0
-    total_batches = 0
-    total_sat = 0.0
-    total_sat_gt = 0.0
-    total_tokens = 0
-
-    # unsafe statistics for nrm_nav (state IDs that are unsafe)
-    track_unsafe = hasattr(dataset, "env") and isinstance(dataset.env, NRMSafetyNavEnv)
-    if track_unsafe:
-        unsafe_ids = {11, 18}
-        gt_unsafe_count = 0
-        pred_unsafe_count = 0
-        state_token_count = 0
-
-    with torch.no_grad():
-        for batch in loader:
-            x, y, mask = [b.to(device) for b in batch]
-            logits, sup_loss = model(x, targets=y, mask=mask)
-            preds = logits.argmax(dim=-1)
-            x_eval = x
-            if isinstance(dfa, (list, tuple)):
-                sats = [adapter.batch_check_dfa_sat(preds, d) for d in dfa]
-                sat = torch.stack(sats, dim=0).min(dim=0).values
-                sats_gt = [adapter.batch_check_dfa_sat(x_eval, d) for d in dfa]
-                sat_gt = torch.stack(sats_gt, dim=0).min(dim=0).values
-            else:
-                sat = adapter.batch_check_dfa_sat(preds, dfa)
-                sat_gt = adapter.batch_check_dfa_sat(x_eval, dfa)
-
-            total_loss += sup_loss.item()
-            total_batches += 1
-            total_sat += sat.sum().item()
-            total_sat_gt += sat_gt.sum().item()
-            total_tokens += sat.numel()
-
-            if track_unsafe:
-                # state positions are those where position % transition_dim == 0
-                seq_len = x.shape[1]
-                positions = torch.arange(seq_len, device=x.device)
-                pos_mod = positions % adapter.transition_dim
-                state_positions = pos_mod == 0
-
-                x_states = x[:, state_positions]
-                preds_states = preds[:, state_positions]
-
-                gt_unsafe = torch.zeros_like(x_states, dtype=torch.bool)
-                pred_unsafe = torch.zeros_like(preds_states, dtype=torch.bool)
-                for uid in unsafe_ids:
-                    gt_unsafe |= x_states == uid
-                    pred_unsafe |= preds_states == uid
-
-                gt_unsafe_count += gt_unsafe.sum().item()
-                pred_unsafe_count += pred_unsafe.sum().item()
-                state_token_count += x_states.numel()
-
-    avg_loss = total_loss / max(1, total_batches)
-    sat_rate = total_sat / max(1, total_tokens)
-    sat_rate_gt = total_sat_gt / max(1, total_tokens)
-
-    metrics = {
-        "supervised_loss": avg_loss,
-        "satisfaction_rate_pred": sat_rate,
-        "satisfaction_rate_gt": sat_rate_gt,
-    }
-
-    if track_unsafe and state_token_count > 0:
-        metrics["unsafe_rate_gt_states"] = gt_unsafe_count / state_token_count
-        metrics["unsafe_rate_pred_states"] = pred_unsafe_count / state_token_count
-
-        # episode-level dataset reward and unsafe episode rate (independent of model)
-        # reconstruct episodes using a fresh env with the same config
-        if hasattr(dataset, "episodes_tokens"):
-            env_cfg = dataset.env.cfg
-            eval_env = NRMSafetyNavEnv(env_cfg)
-            returns = []
-            unsafe_episodes = 0
-            for ep_tokens in dataset.episodes_tokens:
-                obs, _ = eval_env.reset()
-                total_ret = 0.0
-                terminal_info = {}
-                # skip last row which is the special end token
-                for row in ep_tokens[:-1]:
-                    a = int(row[1])
-                    obs, r, done, info = eval_env.step(a)
-                    total_ret += r
-                    if done:
-                        terminal_info = info
-                        break
-                returns.append(total_ret)
-                if terminal_info.get("terminal_type") == "X":
-                    unsafe_episodes += 1
-
-            if returns:
-                metrics["dataset_avg_return"] = float(np.mean(returns))
-                metrics["dataset_return_std"] = float(np.std(returns))
-                metrics["dataset_unsafe_episode_rate"] = unsafe_episodes / len(returns)
-
+    warnings.warn(
+        "train_cb.evaluate_model is deprecated; use evaluate.py or eval_runtime.evaluate_policy_rollouts.",
+        DeprecationWarning,
+    )
+    _ = batch_size, append_end_token
+    spec_name = None
+    decoding_cfg = DecodingConfig(mode="greedy", beam_width=1, plan_horizon=1)
+    metrics, _ = evaluate_policy_rollouts(
+        model=model,
+        adapter=adapter,
+        raw_dfa=dfa,
+        dataset=dataset,
+        env_name=getattr(dataset, "env_name", "nrm_nav")
+        if getattr(dataset, "env_name", None) is not None
+        else ("nrm_nav" if isinstance(dataset.env, NRMSafetyNavEnv) else "cb"),
+        spec_name=spec_name,
+        seed=0,
+        checkpoint_path=None,
+        num_episodes=min(50, max(1, len(getattr(dataset, "episodes_tokens", [])))),
+        max_steps=getattr(dataset.env.cfg, "max_steps", None),
+        decoding_cfg=decoding_cfg,
+    )
     return metrics
 
 
@@ -497,127 +492,42 @@ def rollout_nrm_nav_policy(
     greedy=True,
     append_end_token=False,
 ):
-    """
-    Roll out a policy induced by the model in a fresh NRMSafetyNavEnv and
-    collect episode-level reward and safety statistics, as well as DFA
-    satisfaction on the generated trajectories.
-
-    The model is used autoregressively over token sequences; at each step,
-    the next action is chosen from the model's logits at the last position.
-    """
-
+    warnings.warn(
+        "train_cb.rollout_nrm_nav_policy is deprecated; use evaluate.py or "
+        "eval_runtime.evaluate_policy_rollouts.",
+        DeprecationWarning,
+    )
     env = NRMSafetyNavEnv(env_cfg)
-    model.eval()
 
-    if max_steps is None:
-        max_steps = env_cfg.max_steps
+    class _DatasetProxy:
+        def __init__(self, env_obj):
+            self.env = env_obj
+            self.episodes_tokens = []
 
-    episode_returns = []
-    episode_lengths = []
-    episode_unsafe = []
-    episode_sat = []
-
-    cum_reward_traces = []
-
-    with torch.no_grad():
-        for _ in range(num_episodes):
-            obs, _ = env.reset()
-            # start history with initial state token
-            history = torch.tensor([[int(obs)]], dtype=torch.long, device=device)
-            tokens_this_ep = [int(obs)]
-
-            cum_reward = 0.0
-            cum_rewards_ts = []
-            unsafe = False
-
-            for _ in range(max_steps):
-                # ensure history length does not exceed model block size
-                if history.shape[1] > model.block_size:
-                    idx = history[:, -model.block_size :]
-                else:
-                    idx = history
-
-                logits, _ = model(idx)
-                last_logits = logits[:, -1, :]
-
-                # restrict to valid discrete actions
-                n_actions = env.action_space.n
-                action_logits = last_logits[:, :n_actions]
-                if greedy:
-                    a = int(torch.argmax(action_logits, dim=-1).item())
-                else:
-                    probs = torch.softmax(action_logits, dim=-1)
-                    a = int(torch.multinomial(probs[0], num_samples=1).item())
-
-                next_obs, r, done, info = env.step(a)
-                cum_reward += r
-                cum_rewards_ts.append(cum_reward)
-
-                cost = 1 if info.get("terminal_type") == "X" else 0
-                if cost == 1:
-                    unsafe = True
-
-                # append tokens matching dataset convention: [action, 0, cost, next_state]
-                new_tokens = [a, 0, cost, int(next_obs)]
-                tokens_this_ep.extend(new_tokens)
-
-                new_tokens_tensor = torch.tensor(new_tokens, dtype=torch.long, device=device).view(
-                    1, -1
-                )
-                history = torch.cat([history, new_tokens_tensor], dim=1)
-
-                if done:
-                    break
-
-            episode_returns.append(float(cum_reward))
-            episode_lengths.append(len(cum_rewards_ts))
-            episode_unsafe.append(unsafe)
-            cum_reward_traces.append(cum_rewards_ts)
-
-            # DFA satisfaction on generated trajectory tokens
-            seq_tensor = torch.tensor(tokens_this_ep, dtype=torch.long, device=device).view(1, -1)
-            if append_end_token:
-                warnings.warn(
-                    "append_end_token is deprecated in rollout evaluation; "
-                    "canonical END handling is adapter-driven.",
-                    DeprecationWarning,
-                )
-            if isinstance(dfa, (list, tuple)):
-                sats = [adapter.batch_check_dfa_sat(seq_tensor, d) for d in dfa]
-                sat = torch.stack(sats, dim=0).min(dim=0).values
-                sat_flag = float(sat[0].item())
-            else:
-                sat = adapter.batch_check_dfa_sat(seq_tensor, dfa)
-                sat_flag = float(sat[0].item())
-            episode_sat.append(sat_flag)
-
-    # aggregate metrics
-    avg_return = float(np.mean(episode_returns)) if episode_returns else 0.0
-    std_return = float(np.std(episode_returns)) if episode_returns else 0.0
-    avg_len = float(np.mean(episode_lengths)) if episode_lengths else 0.0
-    unsafe_rate = float(np.mean(episode_unsafe)) if episode_unsafe else 0.0
-    sat_rate = float(np.mean(episode_sat)) if episode_sat else 0.0
-
-    # average cumulative reward vs time step
-    max_len = max((len(tr) for tr in cum_reward_traces), default=0)
-    avg_cum_reward_vs_time = []
-    for t in range(max_len):
-        vals = [tr[t] for tr in cum_reward_traces if len(tr) > t]
-        if vals:
-            avg_cum_reward_vs_time.append(float(np.mean(vals)))
-
-    rollout_metrics = {
-        "num_episodes": num_episodes,
-        "avg_return": avg_return,
-        "std_return": std_return,
-        "avg_episode_length": avg_len,
-        "unsafe_episode_rate": unsafe_rate,
-        "satisfaction_rate_rollout": sat_rate,
-        "cum_reward_vs_time": avg_cum_reward_vs_time,
-        "returns": episode_returns,
+    proxy = _DatasetProxy(env)
+    mode = "greedy" if greedy else "beam"
+    decoding_cfg = DecodingConfig(mode=mode, beam_width=4, plan_horizon=2)
+    _ = append_end_token
+    metrics, _ = evaluate_policy_rollouts(
+        model=model,
+        adapter=adapter,
+        raw_dfa=dfa,
+        dataset=proxy,
+        env_name="nrm_nav",
+        spec_name=None,
+        seed=0,
+        checkpoint_path=None,
+        num_episodes=num_episodes,
+        max_steps=max_steps,
+        decoding_cfg=decoding_cfg,
+    )
+    return {
+        "num_episodes": metrics.get("num_episodes"),
+        "avg_return": metrics.get("return_mean"),
+        "std_return": metrics.get("return_std"),
+        "unsafe_episode_rate": metrics.get("violation_rate_step"),
+        "satisfaction_rate_rollout": metrics.get("satisfaction_rate"),
     }
-
-    return rollout_metrics
 
 
 def analyze_dataset(args, dataset, adapter, raw_dfa):
@@ -821,6 +731,11 @@ def get_arg_parser(add_help=True):
     p.add_argument("--stochastic", action="store_true")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--env", type=str, choices=["cb", "nrm_nav"], default="cb")
+    p.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Fast CPU validation mode that caps episodes/epochs/model size.",
+    )
 
     p.add_argument("--n_layer", type=int, default=4)
     p.add_argument("--n_head", type=int, default=4)
@@ -918,8 +833,56 @@ def get_arg_parser(add_help=True):
         default=0,
         help="Index of the dataset episode to replay when --replay_dataset_episode is set.",
     )
-
-    p.add_argument("--save_path", type=str, default="cb_runs")
+    p.add_argument(
+        "--run_dir",
+        type=str,
+        default=None,
+        help="Explicit run directory. If unset, uses runs/<env>/<UTC timestamp>/.",
+    )
+    p.add_argument(
+        "--base_runs_dir",
+        type=str,
+        default="runs",
+        help="Base directory for auto-created run directories.",
+    )
+    p.add_argument(
+        "--save_path",
+        type=str,
+        default=None,
+        help="Deprecated alias for --run_dir.",
+    )
+    p.add_argument(
+        "--no_eval_after_train",
+        action="store_true",
+        help="Skip post-training rollout evaluation (metrics fields remain null).",
+    )
+    p.add_argument(
+        "--eval_num_episodes",
+        type=int,
+        default=100,
+        help="Number of episodes for post-training rollout evaluation.",
+    )
+    p.add_argument(
+        "--eval_max_steps",
+        type=int,
+        default=None,
+        help="Max steps per evaluation episode (default: env max_steps).",
+    )
+    p.add_argument(
+        "--decoding_mode",
+        type=str,
+        choices=["greedy", "beam", "constrained_beam"],
+        default="greedy",
+        help="Decoding mode for rollout evaluation.",
+    )
+    p.add_argument("--beam_width", type=int, default=4)
+    p.add_argument("--plan_horizon", type=int, default=2)
+    p.add_argument("--sat_rerank_weight", type=float, default=1.0)
+    p.add_argument(
+        "--hard_prune_reject_sink",
+        action="store_true",
+        help="In constrained beam mode, prune beams that enter reject sink states.",
+    )
     p.add_argument(
         "--inspect_output_dir",
         type=str,

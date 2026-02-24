@@ -1,69 +1,107 @@
 import argparse
 import copy
+import csv
 import json
 import os
+import time
 
-import torch
+from eval_runtime import (
+    DecodingConfig,
+    apply_smoke_mode,
+    ensure_run_dir,
+    evaluate_policy_rollouts,
+    save_evaluation_artifacts,
+    set_global_seed,
+    spec_label_from_args,
+    summarize_dfa_bundle,
+)
+from train_cb import get_arg_parser, resolve_formulas, train
 
-from train_cb import evaluate_model, get_arg_parser, rollout_nrm_nav_policy, train
+
+def _null_metrics(env, spec, seed):
+    return {
+        "return_mean": None,
+        "return_std": None,
+        "violation_rate": None,
+        "satisfaction_rate": None,
+        "runtime_sec": None,
+        "env": env,
+        "spec": spec,
+        "seed": int(seed),
+        "num_episodes": None,
+        "satisfaction_soft_mean": None,
+        "violation_rate_episode": None,
+        "violation_rate_step": None,
+        "decoding_mode": None,
+        "beam_width": None,
+        "model_type": "tt",
+        "checkpoint_path": None,
+        "run_id": None,
+        "timestamp_utc": None,
+    }
 
 
 def run_baseline(name, args, alpha_override=None, suffix=None):
-    """Train a single baseline and optionally evaluate it."""
     cfg = copy.deepcopy(args)
     if name == "vanilla":
         cfg.alpha = 0.0
     elif name == "logic":
-        # use cfg.alpha as provided
         pass
     else:
         raise ValueError(f"Unknown baseline '{name}'")
 
     if alpha_override is not None:
         cfg.alpha = alpha_override
+
     tag = name if suffix is None else f"{name}_{suffix}"
-    cfg.save_path = os.path.join(args.base_save_path, tag)
+    cfg.run_dir = os.path.join(args.base_run_dir, tag)
+    cfg.save_path = cfg.run_dir
 
-    # Train and keep the objects for evaluation
-    model, adapter, deep_dfa, dataset, raw_dfa = train(cfg, return_state=True)
+    train_t0 = time.time()
+    model, adapter, _, dataset, raw_dfa = train(cfg, return_state=True)
 
-    metrics = {}
+    spec_name = spec_label_from_args(cfg)
+    formulas = resolve_formulas(cfg)
+    dfa_summary = summarize_dfa_bundle(
+        raw_dfa, spec_name=spec_name, formulas=formulas, dfa_mode=cfg.dfa_mode
+    )
+
     if args.evaluate:
-        metrics = evaluate_model(
-            model,
-            adapter,
-            raw_dfa,
-            dataset,
-            batch_size=args.eval_batch_size,
-            append_end_token=getattr(args, "append_end_token_to_dfa", False),
+        decoding_cfg = DecodingConfig(
+            mode=args.decoding_mode,
+            beam_width=args.beam_width,
+            plan_horizon=args.plan_horizon,
+            sat_rerank_weight=args.sat_rerank_weight,
+            hard_prune_reject_sink=args.hard_prune_reject_sink,
         )
-        # optional rollout evaluation for nrm_nav
-        if args.eval_rollouts and args.env == "nrm_nav":
-            rollout_metrics = rollout_nrm_nav_policy(
-                model,
-                adapter,
-                raw_dfa,
-                dataset.env.cfg,
-                num_episodes=args.rollout_episodes,
-                max_steps=args.rollout_max_steps,
-                greedy=True,
-                append_end_token=getattr(args, "append_end_token_to_dfa", False),
-            )
-            # prefix rollout metrics to avoid collisions
-            for k, v in rollout_metrics.items():
-                metrics[f"rollout_{k}"] = v
+        metrics, rollout_stats = evaluate_policy_rollouts(
+            model=model,
+            adapter=adapter,
+            raw_dfa=raw_dfa,
+            dataset=dataset,
+            env_name=cfg.env,
+            spec_name=spec_name,
+            seed=cfg.seed,
+            checkpoint_path=os.path.join(cfg.run_dir, f"cb_state_{cfg.epochs - 1}.pt"),
+            num_episodes=args.eval_num_episodes,
+            max_steps=args.eval_max_steps,
+            decoding_cfg=decoding_cfg,
+        )
+    else:
+        metrics = _null_metrics(cfg.env, spec_name, cfg.seed)
+        rollout_stats = {"skipped": True, "reason": "evaluate=false"}
 
-        os.makedirs(cfg.save_path, exist_ok=True)
-        metrics_path = os.path.join(cfg.save_path, "metrics.json")
-        with open(metrics_path, "w") as f:
-            json.dump(metrics, f, indent=2)
-
+    _, run_id, ts = ensure_run_dir(cfg.env, run_dir=cfg.run_dir, base_dir=args.base_runs_dir)
+    metrics["runtime_sec"] = float(time.time() - train_t0)
+    metrics["run_id"] = run_id
+    metrics["timestamp_utc"] = ts
+    save_evaluation_artifacts(cfg.run_dir, metrics, dfa_summary, rollout_stats)
     return metrics
 
 
 def parse_baseline_args():
     parent = get_arg_parser(add_help=False)
-    parser = argparse.ArgumentParser(parents=[parent], description="Run baselines")
+    parser = argparse.ArgumentParser(parents=[parent], description="Run TT baselines")
     parser.add_argument(
         "--baselines",
         nargs="+",
@@ -71,71 +109,92 @@ def parse_baseline_args():
         help="Which baselines to run",
     )
     parser.add_argument(
-        "--base_save_path",
+        "--base_run_dir",
         type=str,
-        default="cb_runs",
-        help="Root directory to save checkpoints/metrics",
+        default=None,
+        help="Root directory for baseline sweep outputs. Default: runs/<env>/<timestamp>/",
     )
     parser.add_argument(
         "--evaluate",
         action="store_true",
-        help="Run evaluation after training",
-    )
-    parser.add_argument(
-        "--eval_rollouts",
-        action="store_true",
-        help="For nrm_nav: also evaluate policy rollouts in the environment",
-    )
-    parser.add_argument(
-        "--eval_batch_size",
-        type=int,
-        default=128,
-        help="Batch size for evaluation",
+        help="Run evaluation after training each baseline",
     )
     parser.add_argument(
         "--alphas",
         type=float,
         nargs="+",
         default=[0.4],
-        help="Logic loss weights to sweep for logic baseline",
-    )
-    parser.add_argument(
-        "--rollout_episodes",
-        type=int,
-        default=100,
-        help="Number of rollout episodes per model for nrm_nav policy evaluation",
-    )
-    parser.add_argument(
-        "--rollout_max_steps",
-        type=int,
-        default=None,
-        help="Maximum steps per rollout episode (defaults to env max_steps)",
+        help="Logic loss weights to sweep for the logic baseline",
     )
     return parser
+
+
+def write_summary_artifacts(base_dir, results):
+    os.makedirs(base_dir, exist_ok=True)
+    json_path = os.path.join(base_dir, "baseline_metrics.json")
+    with open(json_path, "w") as f:
+        json.dump(results, f, indent=2)
+
+    csv_path = os.path.join(base_dir, "baseline_metrics.csv")
+    fields = [
+        "baseline",
+        "return_mean",
+        "return_std",
+        "violation_rate",
+        "satisfaction_rate",
+        "runtime_sec",
+        "env",
+        "spec",
+        "seed",
+        "num_episodes",
+        "satisfaction_soft_mean",
+        "violation_rate_episode",
+        "violation_rate_step",
+        "decoding_mode",
+        "beam_width",
+        "model_type",
+        "checkpoint_path",
+        "run_id",
+        "timestamp_utc",
+    ]
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        for baseline_name, metrics in results.items():
+            row = {"baseline": baseline_name}
+            row.update({k: metrics.get(k) for k in fields if k != "baseline"})
+            writer.writerow(row)
+
+    return json_path, csv_path
 
 
 def main():
     parser = parse_baseline_args()
     args = parser.parse_args()
+    args = apply_smoke_mode(args)
+    set_global_seed(args.seed)
+
+    if args.base_run_dir is None:
+        args.base_run_dir, _, _ = ensure_run_dir(
+            args.env, run_dir=None, base_dir=args.base_runs_dir
+        )
+    else:
+        os.makedirs(args.base_run_dir, exist_ok=True)
 
     results = {}
     for name in args.baselines:
         if name == "logic" and args.alphas:
-            for a in args.alphas:
-                print(f"=== Running baseline: {name} alpha={a} ===")
-                metrics = run_baseline(name, args, alpha_override=a, suffix=f"alpha{a}")
-                results[f"{name}_alpha{a}"] = metrics
+            for alpha in args.alphas:
+                key = f"{name}_alpha{alpha}"
+                print(f"=== Running baseline: {key} ===")
+                results[key] = run_baseline(name, args, alpha_override=alpha, suffix=f"alpha{alpha}")
         else:
             print(f"=== Running baseline: {name} ===")
-            metrics = run_baseline(name, args)
-            results[name] = metrics
+            results[name] = run_baseline(name, args)
 
-    if results:
-        summary_path = os.path.join(args.base_save_path, "baseline_metrics.json")
-        os.makedirs(args.base_save_path, exist_ok=True)
-        with open(summary_path, "w") as f:
-            json.dump(results, f, indent=2)
-        print(f"Saved metrics summary to {summary_path}")
+    json_path, csv_path = write_summary_artifacts(args.base_run_dir, results)
+    print(f"Saved summary JSON to {json_path}")
+    print(f"Saved summary CSV to {csv_path}")
 
 
 if __name__ == "__main__":
