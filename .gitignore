@@ -9,7 +9,7 @@ venv*/
 env/
 env*/
 !envs/
-!envs/**
+!envs/*.py
 .env/
 .venv/
 .venv*/
