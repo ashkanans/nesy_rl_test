@@ -11,8 +11,10 @@ env*/
 .env/
 .venv/
 .venv*/
+.venv_issue*/
 .vnenv/
 .vnenv*/
+.vnenv_issue*/
 
 # Distribution / packaging
 build/
@@ -69,6 +71,8 @@ Pipfile.lock
 cb_runs/
 simpleDFAs/
 symbolicDFAs/
+runs/
+artifacts/
 
 # LaTeX paper template: keep only source essentials
 paper/history.txt
