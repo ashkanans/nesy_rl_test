@@ -83,11 +83,18 @@ At evaluation time, we support greedy decoding, unconstrained beam search, and a
 where $F$ is the accepting-state set and $\lambda_{\mathrm{sat}}$ controls soft reranking toward beams consistent with the temporal specification. In constrained mode, we additionally apply hard pruning: beams that enter identified rejecting sink states are removed. This hybrid design preserves probabilistic search while enforcing automaton-level safety constraints when available.
 
 \section{Preliminary Experiments}
+\subsection{Benchmarks}
+\textbf{FrozenLake.} We include FrozenLake as a controlled finite-state safety benchmark to stress correctness of end-to-end logic handling (tokenization, proposition mapping, and DFA evaluation) under simple dynamics. In our setup, holes are treated as unsafe and the goal tile as target completion, with presets such as \texttt{avoid\_holes} and \texttt{reach\_goal\_while\_avoid\_holes}. We use this benchmark for fast smoke validation and semantic sanity checks rather than as a large-scale performance benchmark.
+
+\textbf{ColourBomb.} ColourBomb is our custom interpretable safety environment with explicit hazard cells (bombs) and terminal goal regions. It is included because trajectories and proposition traces are easy to inspect, making it suitable for debugging automaton-aware behavior. We report standardized benchmark metrics including goal rate, bomb-hit rate, and hard satisfaction rate.
+
+\textbf{AntMaze (TODO in current draft).} AntMaze is intended as a core large-scale offline benchmark via D4RL variants, with explicit safety proposition augmentation for logic evaluation. The protocol runner and loader are integrated, but final D4RL-backed reporting is pending a Python-environment upgrade required for the AntMaze dependency stack on our server.
+
 \subsection{Task Specifications}
-We use environment-specific named specification presets to avoid fragile hand-written formulas in experiment scripts. Propositions follow a position-aware naming scheme such as \texttt{s0\_bin22} for state bins and \texttt{a0\_bin3} for action bins. Runtime preset selection is currently enabled for ColourBomb and NRM navigation; FrozenLake and AntMaze presets are compile-tested placeholders in Milestone 1.
+We use environment-specific named specification presets to avoid fragile hand-written formulas in experiment scripts. Propositions follow a position-aware naming scheme such as \texttt{s0\_bin22} for state bins and \texttt{a0\_bin3} for action bins. Runtime preset selection is currently enabled for ColourBomb, NRM navigation, and FrozenLake; AntMaze presets remain in TODO status until D4RL runtime validation is completed.
 
 \begin{table}[t]
-\caption{Specification preset examples used in Milestone 1.}
+\caption{Specification preset examples after Milestone 3 integration.}
 \label{tab:spec_presets}
 \centering
 \small
@@ -95,13 +102,23 @@ We use environment-specific named specification presets to avoid fragile hand-wr
 \hline
 Env & Spec name & Formula & Purpose \\
 \hline
-ColourBomb & avoid\_single\_bomb\_22 & \texttt{G(!(s0\_bin22))} & avoid bomb state \\
+ColourBomb & reach\_goal\_while\_safe & \texttt{G(!(s0\_bin22|s0\_bin27|s0\_bin43|s0\_bin78)) \& F(goal\_states)} & reach while safe \\
 NRM nav & avoid\_unsafe & \texttt{G(!(s0\_bin11 | s0\_bin18))} & avoid unsafe cells \\
-FrozenLake & placeholder\_safe & \texttt{G(!(s0\_bin5))} & compile-tested placeholder \\
-AntMaze & placeholder\_reach & \texttt{F(s0\_bin2)} & compile-tested placeholder \\
+FrozenLake & reach\_goal\_while\_avoid\_holes & \texttt{G(!(s0\_bin5|s0\_bin7|s0\_bin11|s0\_bin12)) \& F(s0\_bin15)} & controlled safety test \\
+AntMaze & antmaze\_umaze\_safety (TODO) & \texttt{TBD after D4RL validation} & pending runtime validation \\
 \hline
 \end{tabular}
 \end{table}
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.9\linewidth}{
+\textbf{Placeholder figure.} Replace with ColourBomb layout figure, e.g., \texttt{paper/figures/cb\_layout.png}.\\
+Suggested content: map with start, bomb cells, and goal-color regions used for proposition labeling.
+}}
+\caption{ColourBomb layout placeholder for benchmark interpretability.}
+\label{fig:cb_layout}
+\end{figure}
 
 \subsection{DFA Inspection and Diagnostics}
 To audit specification complexity and debugging behavior, we export per-spec automata summaries and graph representations (\texttt{.dot}, optional \texttt{.png}). These utilities report state counts, accepting states, sink states, and symbol-set size, and are used to sanity-check compiled formulas before full training runs.
