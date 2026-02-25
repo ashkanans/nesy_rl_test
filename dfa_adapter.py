@@ -1,6 +1,7 @@
 import sys
 import warnings
 from pathlib import Path
+import re
 
 import torch
 from logic.token_schema import get_num_bins_per_dim as schema_num_bins_per_dim
@@ -231,7 +232,10 @@ class TTDFAAdapter:
         return DFA(ltl_formula, self.num_symbols, formula_name, dictionary_symbols=self.symbolic_vocab)
 
     def _parse_unsafe_symbols(self, ltl_formula):
-        return [sym for sym in self.symbolic_vocab if sym in ltl_formula]
+        # Match proposition symbols exactly (no substring matching), e.g.
+        # s0_bin1 must not match s0_bin11.
+        tokens = set(re.findall(r"[A-Za-z0-9_]+", ltl_formula))
+        return [sym for sym in self.symbolic_vocab if sym in tokens]
 
     def _build_safe_dfa_from_unsafe_set(self, ltl_formula, formula_name):
         unsafe_syms = set(self._parse_unsafe_symbols(ltl_formula))

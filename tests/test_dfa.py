@@ -70,3 +70,22 @@ def test_product_dfa_building():
     product = build_product_dfa([dfa_1, dfa_2])
     assert product.num_of_states == 2
     assert product.acceptance == [False, True]
+
+
+def test_safe_dfa_parser_uses_exact_symbol_matching():
+    adapter = TTDFAAdapter(
+        observation_dim=1,
+        action_dim=1,
+        num_bins=[16, 4, 2, 2],
+        include_reward=True,
+        include_value=True,
+        use_stop_token=True,
+    )
+    formula = "G(!(s0_bin5 | s0_bin7 | s0_bin11 | s0_bin12))"
+    parsed = set(adapter._parse_unsafe_symbols(formula))
+
+    assert "s0_bin5" in parsed
+    assert "s0_bin7" in parsed
+    assert "s0_bin11" in parsed
+    assert "s0_bin12" in parsed
+    assert "s0_bin1" not in parsed
