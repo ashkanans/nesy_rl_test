@@ -19,6 +19,7 @@ class DecodingConfig:
     plan_horizon: int = 2
     sat_rerank_weight: float = 1.0
     hard_prune_reject_sink: bool = True
+    target_shift: str = "token"
 
 
 def utc_timestamp() -> str:
@@ -236,14 +237,14 @@ def _advance_state_with_tokens(adapter, raw_dfa, state, token_ids_1d: torch.Tens
 
 
 def _extract_action_log_probs(
-    logits: torch.Tensor, n_actions: int, transition_dim: int
+    logits: torch.Tensor, n_actions: int, transition_dim: int, target_shift: str
 ) -> torch.Tensor:
     """
     Extract next-action log-probabilities from sequence logits.
 
-    Training targets are shifted by one transition row (not by one token), so
-    action_{t+1} is predicted at the action position of transition t. For a
-    sequence of length T this corresponds to index T-transition_dim.
+    For token-shift training, the next action distribution is read at the last
+    history position. For legacy transition-shift training, action_{t+1} is
+    predicted at index T-transition_dim.
     """
     if logits.dim() != 3:
         raise ValueError("Expected logits shape [B, T, V].")
@@ -251,10 +252,13 @@ def _extract_action_log_probs(
     if seq_len <= 0:
         raise ValueError("Empty logits sequence.")
 
-    if seq_len <= transition_dim:
+    if target_shift == "token":
         action_idx = seq_len - 1
     else:
-        action_idx = seq_len - int(transition_dim)
+        if seq_len <= transition_dim:
+            action_idx = seq_len - 1
+        else:
+            action_idx = seq_len - int(transition_dim)
 
     action_logits = logits[:, action_idx, :n_actions]
     return torch.log_softmax(action_logits, dim=-1).squeeze(0)
@@ -274,7 +278,10 @@ def _decode_action(
     idx = _crop_history(history, model.block_size, transition_dim=adapter.transition_dim)
     logits, _ = model(idx)
     action_log_probs = _extract_action_log_probs(
-        logits, n_actions=n_actions, transition_dim=adapter.transition_dim
+        logits,
+        n_actions=n_actions,
+        transition_dim=adapter.transition_dim,
+        target_shift=decoding_cfg.target_shift,
     )
 
     if decoding_cfg.mode == "greedy":
@@ -303,7 +310,10 @@ def _decode_action(
             )
             local_logits, _ = model(local_idx)
             local_action_log_probs = _extract_action_log_probs(
-                local_logits, n_actions=n_actions, transition_dim=adapter.transition_dim
+                local_logits,
+                n_actions=n_actions,
+                transition_dim=adapter.transition_dim,
+                target_shift=decoding_cfg.target_shift,
             )
             topk = torch.topk(local_action_log_probs, k=min(k, n_actions))
 
@@ -571,6 +581,7 @@ def evaluate_policy_rollouts(
         "hazard_hit_rate": hazard_hit_rate,
         "decoding_mode": decoding_cfg.mode,
         "beam_width": int(decoding_cfg.beam_width),
+        "target_shift": decoding_cfg.target_shift,
         "model_type": "tt",
         "checkpoint_path": checkpoint_path,
         "run_id": None,
@@ -590,6 +601,7 @@ def evaluate_policy_rollouts(
         "plan_horizon": int(decoding_cfg.plan_horizon),
         "hard_prune_reject_sink": bool(decoding_cfg.hard_prune_reject_sink),
         "sat_rerank_weight": float(decoding_cfg.sat_rerank_weight),
+        "target_shift": decoding_cfg.target_shift,
         "episode_returns": episode_returns,
         "episode_lengths": episode_lengths,
         "episode_satisfaction": episode_sats,

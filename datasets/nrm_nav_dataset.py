@@ -28,9 +28,13 @@ class NRMSafetySequenceDataset(Dataset):
         stochastic=False,
         seed=0,
         grid=None,
+        target_shift="token",
     ):
         self.sequence_length = sequence_length
         self.discount = discount
+        self.target_shift = str(target_shift)
+        if self.target_shift not in {"token", "transition"}:
+            raise ValueError("target_shift must be 'token' or 'transition'.")
         self.token_schema = get_schema_for_env("nrm_nav")
         self.schema_id = self.token_schema.schema_id
 
@@ -93,14 +97,17 @@ class NRMSafetySequenceDataset(Dataset):
 
             episodes_tokens.append(tokens)
 
-        self.rows_per_seg = max(1, sequence_length // 4)
+        self.rows_per_seg = max(1, sequence_length // self.token_schema.width)
+        self.required_rows = (
+            self.rows_per_seg + 1 if self.target_shift == "transition" else max(2, self.rows_per_seg)
+        )
         indices = []
         for ep_idx, rows in enumerate(episodes_tokens):
             R = rows.shape[0]
-            if R < self.rows_per_seg + 1:
+            if R < self.required_rows:
                 continue
-            starts = list(range(0, max(1, R - (self.rows_per_seg + 1)), self.rows_per_seg))
-            tail = R - (self.rows_per_seg + 1)
+            starts = list(range(0, max(1, R - self.required_rows), self.rows_per_seg))
+            tail = R - self.required_rows
             if tail not in starts:
                 starts.append(tail)
             for start_row in starts:
@@ -119,9 +126,13 @@ class NRMSafetySequenceDataset(Dataset):
     def __getitem__(self, idx):
         ep_idx, start_row = self.indices[idx]
         rows = self.episodes_tokens[ep_idx]
-        seg_rows = rows[start_row : start_row + self.rows_per_seg + 1]
+        seg_rows = rows[start_row : start_row + self.required_rows]
         flat = seg_rows.reshape(-1)
-        x = torch.from_numpy(flat[: -self.joined_dim].astype(np.int64))
-        y = torch.from_numpy(flat[self.joined_dim :].astype(np.int64))
+        if self.target_shift == "token":
+            x = torch.from_numpy(flat[:-1].astype(np.int64))
+            y = torch.from_numpy(flat[1:].astype(np.int64))
+        else:
+            x = torch.from_numpy(flat[: -self.joined_dim].astype(np.int64))
+            y = torch.from_numpy(flat[self.joined_dim :].astype(np.int64))
         mask = torch.ones_like(x, dtype=torch.float32)
         return x, y, mask

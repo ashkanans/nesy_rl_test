@@ -46,6 +46,13 @@ def parse_args():
     p.add_argument("--n_embd", type=int, default=128)
     p.add_argument("--policy_mix", type=float, default=0.5)
     p.add_argument("--alpha", type=float, default=0.0)
+    p.add_argument(
+        "--target_shift",
+        type=str,
+        choices=["token", "transition"],
+        default="token",
+        help="Target alignment for TT training/evaluation (token recommended).",
+    )
 
     p.add_argument("--spec", type=str, default="avoid_holes")
     p.add_argument("--use_safe_dfa", action="store_true")
@@ -127,6 +134,8 @@ def _train_checkpoint(args, train_dir: Path) -> Path:
         str(args.policy_mix),
         "--alpha",
         str(args.alpha),
+        "--target_shift",
+        str(args.target_shift),
         "--frozenlake_map_size",
         args.frozenlake_map_size,
         "--run_dir",
@@ -195,6 +204,8 @@ def _run_eval(args, ckpt: Path, mode: DecodeMode, eval_seed: int, eval_dir: Path
         args.spec,
         "--alpha",
         str(args.alpha),
+        "--target_shift",
+        str(args.target_shift),
         "--seed",
         str(eval_seed),
         "--num_episodes",
@@ -430,6 +441,7 @@ def main():
         "spec": args.spec,
         "use_safe_dfa": bool(args.use_safe_dfa),
         "alpha": float(args.alpha),
+        "target_shift": args.target_shift,
         "beam_width": int(args.beam_width),
         "plan_horizon": int(args.plan_horizon),
         "sat_rerank_weight": float(args.sat_rerank_weight),

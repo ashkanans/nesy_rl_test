@@ -34,10 +34,14 @@ class FrozenLakeSequenceDataset(Dataset):
         map_size="4x4",
         is_slippery=False,
         policy_mix=0.0,
+        target_shift="token",
     ):
         self.sequence_length = int(sequence_length)
         self.discount = float(discount)
         self.policy_mix = float(policy_mix)
+        self.target_shift = str(target_shift)
+        if self.target_shift not in {"token", "transition"}:
+            raise ValueError("target_shift must be 'token' or 'transition'.")
         self.token_schema = get_schema_for_env("frozenlake")
         self.schema_id = self.token_schema.schema_id
 
@@ -112,8 +116,10 @@ class FrozenLakeSequenceDataset(Dataset):
             self.episodes_tokens.append(tokens)
             self.episode_rewards.append(np.asarray(rewards, dtype=np.float32))
 
-        self.rows_per_seg = max(1, self.sequence_length // 4)
-        self.required_rows = self.rows_per_seg + 1
+        self.rows_per_seg = max(1, self.sequence_length // self.token_schema.width)
+        self.required_rows = (
+            self.rows_per_seg + 1 if self.target_shift == "transition" else max(2, self.rows_per_seg)
+        )
         self.indices = []
         for ep_idx, rows in enumerate(self.episodes_tokens):
             n_rows = rows.shape[0]
@@ -146,11 +152,18 @@ class FrozenLakeSequenceDataset(Dataset):
             end_row = build_end_row(self.token_schema, self.end_token_id).reshape(1, -1)
             seg_rows = np.vstack([seg_rows, np.repeat(end_row, repeats=pad_rows, axis=0)])
         flat = seg_rows.reshape(-1)
-        x = torch.from_numpy(flat[: -self.joined_dim].astype(np.int64))
-        y = torch.from_numpy(flat[self.joined_dim :].astype(np.int64))
+        if self.target_shift == "token":
+            x = torch.from_numpy(flat[:-1].astype(np.int64))
+            y = torch.from_numpy(flat[1:].astype(np.int64))
+        else:
+            x = torch.from_numpy(flat[: -self.joined_dim].astype(np.int64))
+            y = torch.from_numpy(flat[self.joined_dim :].astype(np.int64))
         mask = torch.ones_like(x, dtype=torch.float32)
         if valid_rows < self.required_rows:
-            valid_target_tokens = max(0, valid_rows - 1) * self.joined_dim
+            if self.target_shift == "token":
+                valid_target_tokens = max(0, valid_rows * self.joined_dim - 1)
+            else:
+                valid_target_tokens = max(0, valid_rows - 1) * self.joined_dim
             if valid_target_tokens < mask.shape[0]:
                 mask[valid_target_tokens:] = 0.0
         return x, y, mask

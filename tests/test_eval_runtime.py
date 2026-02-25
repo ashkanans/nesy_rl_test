@@ -112,13 +112,26 @@ def test_crop_history_preserves_transition_alignment():
     assert int(cropped[0, -1].item()) == int(history[0, -1].item())
 
 
-def test_extract_action_log_probs_uses_transition_shift_position():
+def test_extract_action_log_probs_uses_token_shift_position():
     logits = torch.zeros(1, 9, 6, dtype=torch.float32)
-    # Last-token logits prefer action 1, but transition-shift action index should
-    # be 9 - 4 = 5, where action 2 is preferred.
+    # Token-shift uses the last position.
     logits[0, 8, 1] = 10.0
     logits[0, 5, 2] = 10.0
 
-    log_probs = _extract_action_log_probs(logits, n_actions=4, transition_dim=4)
+    log_probs = _extract_action_log_probs(
+        logits, n_actions=4, transition_dim=4, target_shift="token"
+    )
+    action = int(torch.argmax(log_probs).item())
+    assert action == 1
+
+
+def test_extract_action_log_probs_uses_transition_shift_position():
+    logits = torch.zeros(1, 9, 6, dtype=torch.float32)
+    logits[0, 8, 1] = 10.0
+    logits[0, 5, 2] = 10.0
+
+    log_probs = _extract_action_log_probs(
+        logits, n_actions=4, transition_dim=4, target_shift="transition"
+    )
     action = int(torch.argmax(log_probs).item())
     assert action == 2

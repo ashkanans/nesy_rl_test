@@ -8,9 +8,7 @@ def _check_dataset_sample_shapes_and_shift(dataset):
 
     assert x.shape == y.shape == mask.shape
 
-    x_rows = x.view(-1, 4)
-    y_rows = y.view(-1, 4)
-    assert (y_rows[:-1] == x_rows[1:]).all()
+    assert (x[1:] == y[:-1]).all()
 
 
 def _check_exactly_one_end_per_episode(dataset):
@@ -59,3 +57,20 @@ def test_frozenlake_scripted_only_short_episodes_are_kept_with_padding():
     x, y, mask = dataset[0]
     assert x.shape == y.shape == mask.shape
     assert float(mask.sum().item()) < float(mask.numel())
+
+
+def test_frozenlake_legacy_transition_shift_still_supported():
+    dataset = FrozenLakeSequenceDataset(
+        num_episodes=8,
+        max_steps=10,
+        sequence_length=8,
+        map_size="4x4",
+        is_slippery=False,
+        policy_mix=0.2,
+        target_shift="transition",
+    )
+    x, y, mask = dataset[0]
+    assert x.shape == y.shape == mask.shape
+    x_rows = x.view(-1, 4)
+    y_rows = y.view(-1, 4)
+    assert (y_rows[:-1] == x_rows[1:]).all()

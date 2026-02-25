@@ -127,6 +127,7 @@ def main():
         plan_horizon=args.plan_horizon,
         sat_rerank_weight=args.sat_rerank_weight,
         hard_prune_reject_sink=args.hard_prune_reject_sink,
+        target_shift=args.target_shift,
     )
 
     t0 = time.time()

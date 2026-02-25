@@ -255,6 +255,7 @@ def build_dataset(args):
             map_size=args.frozenlake_map_size,
             is_slippery=args.frozenlake_is_slippery,
             policy_mix=args.policy_mix,
+            target_shift=args.target_shift,
         )
     if args.env == "cb":
         return CBSequenceDataset(
@@ -264,6 +265,7 @@ def build_dataset(args):
             discount=args.discount,
             stochastic=args.stochastic,
             seed=args.seed,
+            target_shift=args.target_shift,
         )
     elif args.env == "nrm_nav":
         return NRMSafetySequenceDataset(
@@ -274,6 +276,7 @@ def build_dataset(args):
             stochastic=args.stochastic,
             seed=args.seed,
             grid=None,
+            target_shift=args.target_shift,
         )
     else:
         raise ValueError(f"Unknown env {args.env}")
@@ -464,6 +467,7 @@ def train(args, return_state=False):
             plan_horizon=args.plan_horizon,
             sat_rerank_weight=args.sat_rerank_weight,
             hard_prune_reject_sink=args.hard_prune_reject_sink,
+            target_shift=args.target_shift,
         )
         metrics, rollout_stats = evaluate_policy_rollouts(
             model=model,
@@ -508,7 +512,7 @@ def evaluate_model(model, adapter, dfa, dataset, batch_size=64, append_end_token
     )
     _ = batch_size, append_end_token
     spec_name = None
-    decoding_cfg = DecodingConfig(mode="greedy", beam_width=1, plan_horizon=1)
+    decoding_cfg = DecodingConfig(mode="greedy", beam_width=1, plan_horizon=1, target_shift="token")
     metrics, _ = evaluate_policy_rollouts(
         model=model,
         adapter=adapter,
@@ -561,7 +565,7 @@ def rollout_nrm_nav_policy(
 
     proxy = _DatasetProxy(env)
     mode = "greedy" if greedy else "beam"
-    decoding_cfg = DecodingConfig(mode=mode, beam_width=4, plan_horizon=2)
+    decoding_cfg = DecodingConfig(mode=mode, beam_width=4, plan_horizon=2, target_shift="token")
     _ = append_end_token
     metrics, _ = evaluate_policy_rollouts(
         model=model,
@@ -996,6 +1000,16 @@ def get_arg_parser(add_help=True):
         choices=["greedy", "beam", "constrained_beam"],
         default="greedy",
         help="Decoding mode for rollout evaluation.",
+    )
+    p.add_argument(
+        "--target_shift",
+        type=str,
+        choices=["token", "transition"],
+        default="token",
+        help=(
+            "Training target alignment: token=next-token prediction (recommended), "
+            "transition=legacy next-transition prediction."
+        ),
     )
     p.add_argument("--beam_width", type=int, default=4)
     p.add_argument("--plan_horizon", type=int, default=2)
