@@ -113,13 +113,17 @@ class FrozenLakeSequenceDataset(Dataset):
             self.episode_rewards.append(np.asarray(rewards, dtype=np.float32))
 
         self.rows_per_seg = max(1, self.sequence_length // 4)
+        self.required_rows = self.rows_per_seg + 1
         self.indices = []
         for ep_idx, rows in enumerate(self.episodes_tokens):
             n_rows = rows.shape[0]
-            if n_rows < self.rows_per_seg + 1:
+            if n_rows < self.required_rows:
+                # Keep short episodes (common for scripted FrozenLake paths) and
+                # pad in __getitem__ while masking padded targets from the loss.
+                self.indices.append((ep_idx, 0))
                 continue
-            starts = list(range(0, max(1, n_rows - (self.rows_per_seg + 1)), self.rows_per_seg))
-            tail = n_rows - (self.rows_per_seg + 1)
+            starts = list(range(0, max(1, n_rows - self.required_rows), self.rows_per_seg))
+            tail = n_rows - self.required_rows
             if tail not in starts:
                 starts.append(tail)
             for start_row in starts:
@@ -135,9 +139,18 @@ class FrozenLakeSequenceDataset(Dataset):
     def __getitem__(self, idx):
         ep_idx, start_row = self.indices[idx]
         rows = self.episodes_tokens[ep_idx]
-        seg_rows = rows[start_row : start_row + self.rows_per_seg + 1]
+        seg_rows = rows[start_row : start_row + self.required_rows]
+        valid_rows = int(seg_rows.shape[0])
+        if valid_rows < self.required_rows:
+            pad_rows = self.required_rows - valid_rows
+            end_row = build_end_row(self.token_schema, self.end_token_id).reshape(1, -1)
+            seg_rows = np.vstack([seg_rows, np.repeat(end_row, repeats=pad_rows, axis=0)])
         flat = seg_rows.reshape(-1)
         x = torch.from_numpy(flat[: -self.joined_dim].astype(np.int64))
         y = torch.from_numpy(flat[self.joined_dim :].astype(np.int64))
         mask = torch.ones_like(x, dtype=torch.float32)
+        if valid_rows < self.required_rows:
+            valid_target_tokens = max(0, valid_rows - 1) * self.joined_dim
+            if valid_target_tokens < mask.shape[0]:
+                mask[valid_target_tokens:] = 0.0
         return x, y, mask

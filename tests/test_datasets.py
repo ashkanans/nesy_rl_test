@@ -42,3 +42,20 @@ def test_frozenlake_dataset_sample_shape_and_shift():
     )
     _check_dataset_sample_shapes_and_shift(dataset)
     _check_exactly_one_end_per_episode(dataset)
+
+
+def test_frozenlake_scripted_only_short_episodes_are_kept_with_padding():
+    dataset = FrozenLakeSequenceDataset(
+        num_episodes=32,
+        max_steps=30,
+        sequence_length=32,
+        map_size="4x4",
+        is_slippery=False,
+        policy_mix=1.0,
+        seed=0,
+    )
+
+    assert len(dataset) > 0
+    x, y, mask = dataset[0]
+    assert x.shape == y.shape == mask.shape
+    assert float(mask.sum().item()) < float(mask.numel())
