@@ -89,3 +89,47 @@ def test_safe_dfa_parser_uses_exact_symbol_matching():
     assert "s0_bin11" in parsed
     assert "s0_bin12" in parsed
     assert "s0_bin1" not in parsed
+
+
+def _build_frozenlake_like_adapter():
+    return TTDFAAdapter(
+        observation_dim=1,
+        action_dim=1,
+        num_bins=[16, 4, 2, 2],
+        include_reward=True,
+        include_value=True,
+        use_stop_token=True,
+    )
+
+
+def _trace_tokens(adapter, states):
+    toks = []
+    for s in states:
+        toks.extend([int(s), 0, 0, 0])
+    toks.extend([adapter.end_token_id, 0, 0, 0])
+    return torch.tensor(toks, dtype=torch.long).view(1, -1)
+
+
+def test_template_backend_reach_and_safety_semantics():
+    adapter = _build_frozenlake_like_adapter()
+    formula = "G(!(s0_bin5 | s0_bin7 | s0_bin11 | s0_bin12)) & F(s0_bin15)"
+    dfa = adapter.create_dfa_from_ltl(formula, "rg_safe", dfa_backend="template")
+
+    sat_good = adapter.check_sat_token_ids(_trace_tokens(adapter, [0, 1, 2, 3, 15]), dfa)
+    sat_no_goal = adapter.check_sat_token_ids(_trace_tokens(adapter, [0, 1, 2, 3, 4]), dfa)
+    sat_hole = adapter.check_sat_token_ids(_trace_tokens(adapter, [0, 1, 5, 15]), dfa)
+
+    assert sat_good.item() is True
+    assert sat_no_goal.item() is False
+    assert sat_hole.item() is False
+
+
+def test_auto_backend_uses_template_for_supported_formula():
+    adapter = _build_frozenlake_like_adapter()
+    formula = "F(s0_bin15)"
+    dfa = adapter.create_dfa_from_ltl(formula, "reach_goal_auto", dfa_backend="auto")
+
+    sat_goal = adapter.check_sat_token_ids(_trace_tokens(adapter, [0, 1, 15]), dfa)
+    sat_no_goal = adapter.check_sat_token_ids(_trace_tokens(adapter, [0, 1, 2]), dfa)
+    assert sat_goal.item() is True
+    assert sat_no_goal.item() is False

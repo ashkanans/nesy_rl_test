@@ -177,7 +177,12 @@ def build_adapter_and_dfa(args, dataset):
     formulas = resolve_formulas(args, dataset=dataset)
 
     dfas = [
-        adapter.create_dfa_from_ltl(f, f"cb_constraint_{i}", use_safe_dfa=args.use_safe_dfa)
+        adapter.create_dfa_from_ltl(
+            f,
+            f"cb_constraint_{i}",
+            use_safe_dfa=args.use_safe_dfa,
+            dfa_backend=getattr(args, "dfa_backend", "auto"),
+        )
         for i, f in enumerate(formulas)
     ]
 
@@ -330,6 +335,9 @@ def train(args, return_state=False):
         alpha=args.alpha,
         eps=getattr(args, "logic_eps", 1e-10),
         clamp_acceptance=not getattr(args, "no_logic_clamp", False),
+        acceptance_floor_mode=getattr(args, "logic_acceptance_floor_mode", None),
+        sample_weighting=getattr(args, "logic_sample_weighting", "importance"),
+        logic_state_only=getattr(args, "logic_state_only", False),
     )
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
@@ -340,6 +348,10 @@ def train(args, return_state=False):
         total_loss = 0.0
         total_sup = 0.0
         total_log = 0.0
+        total_prob_acc = 0.0
+        total_prob_acc_min = 0.0
+        total_prob_acc_le_eps = 0.0
+        n_logic_stats = 0
         n_batches = 0
 
         for batch in loader:
@@ -354,9 +366,17 @@ def train(args, return_state=False):
             total_loss += loss.item()
             total_sup += sup_loss.item()
             total_log += logic_loss.item()
+            stats = getattr(logic, "last_logic_stats", None)
+            if isinstance(stats, dict) and stats:
+                total_prob_acc += float(stats.get("prob_acceptance_mean", 0.0))
+                total_prob_acc_min += float(stats.get("prob_acceptance_min", 0.0))
+                frac = stats.get("frac_prob_acceptance_le_eps")
+                if frac is not None:
+                    total_prob_acc_le_eps += float(frac)
+                n_logic_stats += 1
             n_batches += 1
 
-        print(
+        msg = (
             "epoch %d | loss %.4f | sup %.4f | logic %.4f"
             % (
                 epoch,
@@ -365,6 +385,16 @@ def train(args, return_state=False):
                 total_log / max(1, n_batches),
             )
         )
+        if getattr(args, "logic_report_stats", False) and n_logic_stats > 0:
+            msg += (
+                " | p_acc_mean %.6f | p_acc_min %.6f | frac_p_acc<=eps %.3f"
+                % (
+                    total_prob_acc / n_logic_stats,
+                    total_prob_acc_min / n_logic_stats,
+                    total_prob_acc_le_eps / n_logic_stats,
+                )
+            )
+        print(msg)
 
         if args.run_dir is not None:
             os.makedirs(args.run_dir, exist_ok=True)
@@ -828,11 +858,48 @@ def get_arg_parser(add_help=True):
         action="store_true",
         help="Build simple safety DFA for G(!unsafe) formulas",
     )
+    p.add_argument(
+        "--dfa_backend",
+        type=str,
+        choices=["auto", "ltlf", "template"],
+        default="auto",
+        help=(
+            "DFA construction backend: auto (template when supported, else ltlf), "
+            "ltlf (generic compiler), template (only supported structured formulas)."
+        ),
+    )
     p.add_argument("--constraint_dims", type=int, nargs="+", default=[0])
 
     p.add_argument("--num_samples", type=int, default=10)
     p.add_argument("--temperature", type=float, default=0.5)
     p.add_argument("--alpha", type=float, default=0.4)
+    p.add_argument(
+        "--logic_sample_weighting",
+        type=str,
+        choices=["importance", "uniform"],
+        default="importance",
+        help="How to aggregate sampled-trace acceptance probabilities.",
+    )
+    p.add_argument(
+        "--logic_acceptance_floor_mode",
+        type=str,
+        choices=["clamp", "add", "none"],
+        default=None,
+        help=(
+            "Stabilization before log in logic loss. "
+            "If unset, defaults to 'clamp' unless --no_logic_clamp is used."
+        ),
+    )
+    p.add_argument(
+        "--logic_state_only",
+        action="store_true",
+        help="Evaluate logic loss only on state-token positions.",
+    )
+    p.add_argument(
+        "--logic_report_stats",
+        action="store_true",
+        help="Print epoch-level acceptance diagnostics for logic loss.",
+    )
 
     p.add_argument(
         "--logic_eps",

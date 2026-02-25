@@ -2,6 +2,7 @@ import sys
 import warnings
 from pathlib import Path
 import re
+from collections import deque
 
 import torch
 from logic.token_schema import get_num_bins_per_dim as schema_num_bins_per_dim
@@ -222,9 +223,149 @@ class TTDFAAdapter:
         end_step[:, 0, self.end_symbol_id] = 1.0
         return torch.cat([symbol_probs, end_step], dim=1)
 
-    def create_dfa_from_ltl(self, ltl_formula, formula_name="constraint", use_safe_dfa=False):
+    def _split_top_level_and(self, formula):
+        parts = []
+        depth = 0
+        start = 0
+        for i, ch in enumerate(formula):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth = max(0, depth - 1)
+            elif ch == "&" and depth == 0:
+                parts.append(formula[start:i].strip())
+                start = i + 1
+        parts.append(formula[start:].strip())
+        return [p for p in parts if p]
+
+    def _parse_symbol_disjunction(self, expr):
+        tokens = re.findall(r"[A-Za-z][A-Za-z0-9_]*", expr)
+        if not tokens:
+            return set()
+        out = set()
+        for tok in tokens:
+            if tok in {"G", "F", "X", "U", "R", "W", "M", "true", "false"}:
+                continue
+            if tok in self.symbol_to_idx:
+                out.add(tok)
+        return out
+
+    def _match_avoid_formula(self, formula):
+        f = formula.replace(" ", "")
+        # G(!(a|b|c))
+        m = re.fullmatch(r"G\(!\((.+)\)\)", f)
+        if m is None:
+            return None
+        syms = self._parse_symbol_disjunction(m.group(1))
+        return syms if syms else None
+
+    def _match_reach_formula(self, formula):
+        f = formula.replace(" ", "")
+        # F(a) or F((a|b))
+        m = re.fullmatch(r"F\((.+)\)", f)
+        if m is None:
+            return None
+        body = m.group(1)
+        if body.startswith("(") and body.endswith(")"):
+            body = body[1:-1]
+        syms = self._parse_symbol_disjunction(body)
+        return syms if syms else None
+
+    def _build_reach_dfa_from_goal_set(self, goal_syms, formula_name):
+        goal_syms = set(goal_syms)
+        transitions = {0: {}, 1: {}}
+        for idx, sym in enumerate(self.symbolic_vocab):
+            if sym in goal_syms:
+                transitions[0][idx] = 1
+                transitions[1][idx] = 1
+            else:
+                transitions[0][idx] = 0
+                transitions[1][idx] = 1
+        acceptance = [False, True]
+        return DFA(transitions, acceptance, None, dictionary_symbols=self.symbolic_vocab)
+
+    def _build_product_dfa(self, components):
+        init = tuple(0 for _ in components)
+        queue = deque([init])
+        state_to_id = {init: 0}
+        transitions = {}
+        acceptance = []
+
+        while queue:
+            s_tuple = queue.popleft()
+            sid = state_to_id[s_tuple]
+            transitions[sid] = {}
+            acc = True
+            for i, dfa in enumerate(components):
+                acc = acc and bool(dfa.acceptance[s_tuple[i]])
+            while len(acceptance) <= sid:
+                acceptance.append(False)
+            acceptance[sid] = bool(acc)
+
+            for sym in range(self.num_symbols):
+                nxt = []
+                for i, dfa in enumerate(components):
+                    cur = s_tuple[i]
+                    nxt.append(int(dfa.transitions[cur].get(sym, cur)))
+                nxt = tuple(nxt)
+                if nxt not in state_to_id:
+                    state_to_id[nxt] = len(state_to_id)
+                    queue.append(nxt)
+                transitions[sid][sym] = state_to_id[nxt]
+
+        return DFA(transitions, acceptance, None, dictionary_symbols=self.symbolic_vocab)
+
+    def _build_template_dfa(self, ltl_formula, formula_name):
+        # single avoid
+        unsafe = self._match_avoid_formula(ltl_formula)
+        if unsafe is not None:
+            return self._build_safe_dfa_from_unsafe_set(ltl_formula, formula_name)
+
+        # single reach
+        goals = self._match_reach_formula(ltl_formula)
+        if goals is not None:
+            return self._build_reach_dfa_from_goal_set(goals, formula_name)
+
+        # conjunction of supported clauses
+        parts = self._split_top_level_and(ltl_formula)
+        if len(parts) == 2:
+            comp = []
+            p0_unsafe = self._match_avoid_formula(parts[0])
+            p1_unsafe = self._match_avoid_formula(parts[1])
+            p0_goal = self._match_reach_formula(parts[0])
+            p1_goal = self._match_reach_formula(parts[1])
+            if p0_unsafe is not None and p1_goal is not None:
+                comp.append(self._build_safe_dfa_from_unsafe_set(parts[0], f"{formula_name}_safe"))
+                comp.append(self._build_reach_dfa_from_goal_set(p1_goal, f"{formula_name}_goal"))
+                return self._build_product_dfa(comp)
+            if p1_unsafe is not None and p0_goal is not None:
+                comp.append(self._build_safe_dfa_from_unsafe_set(parts[1], f"{formula_name}_safe"))
+                comp.append(self._build_reach_dfa_from_goal_set(p0_goal, f"{formula_name}_goal"))
+                return self._build_product_dfa(comp)
+        return None
+
+    def create_dfa_from_ltl(
+        self,
+        ltl_formula,
+        formula_name="constraint",
+        use_safe_dfa=False,
+        dfa_backend="auto",
+    ):
         # Canonical behavior: disable legacy DFA end-state hack.
         FSM.USE_END_HACK = False
+
+        if dfa_backend not in {"auto", "ltlf", "template"}:
+            raise ValueError(f"Unknown dfa_backend '{dfa_backend}'.")
+
+        if dfa_backend in {"auto", "template"}:
+            templated = self._build_template_dfa(ltl_formula, formula_name)
+            if templated is not None:
+                return templated
+            if dfa_backend == "template":
+                raise ValueError(
+                    "Template DFA backend could not parse formula. "
+                    "Use --dfa_backend ltlf for generic compilation."
+                )
 
         if use_safe_dfa and ltl_formula.startswith("G("):
             return self._build_safe_dfa_from_unsafe_set(ltl_formula, formula_name)

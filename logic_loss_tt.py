@@ -14,6 +14,43 @@ else:
     device = "cpu"
 
 
+def compute_sample_weights(log_prob_traces, mode):
+    """
+    Build per-sample weights for acceptance aggregation.
+
+    Args:
+        log_prob_traces: [B, K] log-likelihood-like scores
+        mode: one of {"importance", "uniform"}
+    """
+    if mode == "importance":
+        return F.softmax(log_prob_traces, dim=-1)
+    if mode == "uniform":
+        return torch.full_like(log_prob_traces, 1.0 / log_prob_traces.shape[-1])
+    raise ValueError(f"Unknown sample weighting mode: {mode}")
+
+
+def apply_acceptance_floor(prob_acceptance, mode, eps):
+    """
+    Stabilize acceptance probabilities before log.
+
+    Modes:
+      - clamp: max(p, eps)
+      - add:   p + eps
+      - none:  p
+    """
+    if mode == "clamp":
+        if eps is None or eps <= 0.0:
+            return prob_acceptance
+        return prob_acceptance.clamp(min=eps)
+    if mode == "add":
+        if eps is None or eps <= 0.0:
+            return prob_acceptance
+        return prob_acceptance + eps
+    if mode == "none":
+        return prob_acceptance
+    raise ValueError(f"Unknown acceptance floor mode: {mode}")
+
+
 class LogicLossModule:
     """
     Logic-aware loss for Trajectory Transformer with Deep DFA constraints.
@@ -54,6 +91,9 @@ class LogicLossModule:
         append_end_symbol=False,
         eps=1e-10,
         clamp_acceptance=True,
+        acceptance_floor_mode=None,
+        sample_weighting="importance",
+        logic_state_only=False,
     ):
         """
         Initialize the logic loss module.
@@ -82,6 +122,15 @@ class LogicLossModule:
             clamp_acceptance:
                 if True, clamp acceptance probabilities from below by eps before
                 taking the log; if False, log(0) is allowed and may produce -inf.
+            acceptance_floor_mode:
+                explicit floor strategy {"clamp","add","none"}.
+                If None, inferred from clamp_acceptance for backward compatibility.
+            sample_weighting:
+                acceptance aggregation weights over samples:
+                {"importance","uniform"}.
+            logic_state_only:
+                if True, evaluate logic only on state-token positions, ignoring
+                action/reward/value positions.
             append_end_symbol:
                 Deprecated compatibility argument. END is now appended exactly once
                 in canonical mode regardless of this flag.
@@ -98,6 +147,12 @@ class LogicLossModule:
         self.alpha = alpha
         self.eps = eps
         self.clamp_acceptance = clamp_acceptance
+        if acceptance_floor_mode is None:
+            acceptance_floor_mode = "clamp" if clamp_acceptance else "none"
+        self.acceptance_floor_mode = str(acceptance_floor_mode)
+        self.sample_weighting = str(sample_weighting)
+        self.logic_state_only = bool(logic_state_only)
+        self.last_logic_stats = {}
         if append_end_symbol:
             warnings.warn(
                 "append_end_symbol is deprecated and ignored. "
@@ -206,6 +261,10 @@ class LogicLossModule:
         traces_soft = samples.view(batch_size * num_samples, seq_len, num_token_ids)
 
         sym_probs = adapter.token_probs_to_symbol_probs(traces_soft)
+        if self.logic_state_only:
+            pos = torch.arange(seq_len, device=sym_probs.device)
+            state_mask = (pos % int(adapter.transition_dim)) == 0
+            sym_probs = sym_probs[:, state_mask, :]
         # Canonical finite-trace semantics: consume explicit END exactly once.
         sym_probs = adapter.append_terminal_end_symbol_probs(sym_probs)
 
@@ -218,7 +277,7 @@ class LogicLossModule:
         if dfa_final.size(-1) < 2:
             raise ValueError("DeepDFA final reward has <2 outputs; expected [reject, accept].")
 
-        acceptance = dfa_final[:, 1]
+        acceptance = dfa_final[:, 1].clamp(min=0.0, max=1.0)
         acceptance = acceptance.view(batch_size, num_samples)
 
         log_probs_exp = log_probs.unsqueeze(1).expand(
@@ -226,15 +285,24 @@ class LogicLossModule:
         )
         log_prob_traces = (samples * log_probs_exp).sum(dim=-1).sum(dim=-1)
 
-        weights = F.softmax(log_prob_traces, dim=-1)
+        weights = compute_sample_weights(log_prob_traces, mode=self.sample_weighting)
         prob_acceptance = (weights * acceptance).sum(dim=-1)
 
-        if self.clamp_acceptance and self.eps is not None and self.eps > 0.0:
-            prob_safe = prob_acceptance.clamp(min=self.eps)
-        else:
-            prob_safe = prob_acceptance
+        prob_safe = apply_acceptance_floor(
+            prob_acceptance, mode=self.acceptance_floor_mode, eps=self.eps
+        )
 
         logic_loss = -torch.log(prob_safe).mean()
+        with torch.no_grad():
+            eps = float(self.eps if self.eps is not None else 0.0)
+            self.last_logic_stats = {
+                "prob_acceptance_mean": float(prob_acceptance.mean().item()),
+                "prob_acceptance_min": float(prob_acceptance.min().item()),
+                "prob_acceptance_max": float(prob_acceptance.max().item()),
+                "frac_prob_acceptance_le_eps": float((prob_acceptance <= eps).float().mean().item())
+                if eps > 0.0
+                else None,
+            }
 
         total_loss = (1.0 - alpha) * sup_loss + alpha * logic_loss
 
