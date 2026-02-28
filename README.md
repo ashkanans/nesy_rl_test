@@ -177,6 +177,70 @@ Per-run outputs:
 - checkpoints (for train runs): `cb_state_<epoch>.pt`
 - optional plots under `plots/`
 
+## Telegram Hourly Status Monitor
+
+You can run a lightweight outbound-only reporter from inside the running container.
+It sends one concise status message every hour with:
+
+- currently running experiment jobs (`scripts/train.py`, `scripts/evaluate.py`, `scripts/run_baselines.py`, etc.)
+- CPU load, RAM usage, and disk usage
+- per-GPU utilization/memory/power/temperature (via `nvidia-smi`)
+
+### 1) Configure Telegram
+
+Default transport matches `YoutubeBot/bot_sender.py` style (`Telethon` user session).
+
+Set:
+
+- `API_ID` (or `TELEGRAM_API_ID`)
+- `API_HASH` (or `TELEGRAM_API_HASH`)
+- `PHONE` (or `TELEGRAM_PHONE`)
+- `GROUP_ID` (or `TELEGRAM_GROUP_ID`) if already known, otherwise set `TELEGRAM_GROUP_TITLE`
+
+Notes:
+
+- If `GROUP_ID` is missing and `TELEGRAM_GROUP_TITLE` is set, the tool finds that group.
+- If not found, it creates it once by default (`--create-group-if-missing`).
+- Session file defaults to `user_session` (same style as your `bot_sender.py`).
+
+### 2) Run one snapshot (test)
+
+```bash
+python scripts/telegram_hourly_status.py --once --telegram-mode telethon
+```
+
+### 3) Run hourly loop
+
+```bash
+python scripts/telegram_hourly_status.py --interval-sec 3600 --telegram-mode telethon
+```
+
+### 4) Initialize and persist group/chat detection
+
+```bash
+python scripts/telegram_hourly_status.py --ensure-group --telegram-mode telethon
+```
+
+Example with env vars:
+
+```bash
+pip install telethon
+export API_ID=...
+export API_HASH=...
+export PHONE=+39...
+export TELEGRAM_GROUP_TITLE="NeSy RL Monitor"
+python scripts/telegram_hourly_status.py --ensure-group --telegram-mode telethon
+```
+
+Useful flags:
+
+- `--dry-run` prints the report without sending
+- `--max-jobs N` limits number of listed jobs
+- `--disk-path /workspace/nesy_rl` selects the disk path to monitor
+- `--chat-id ...` overrides group/chat id
+- `--telethon-session ...` changes session file path
+- Optional fallback: `--telegram-mode bot` uses Bot API (`TELEGRAM_BOT_TOKEN`)
+
 ## AntMaze
 
 AntMaze support is provided through `antmaze_dataset.py` and `antmaze_eval.py` with D4RL/MuJoCo dependencies.
