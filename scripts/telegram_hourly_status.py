@@ -143,7 +143,7 @@ async def _telethon_find_group_id(
         async for dialog in client.iter_dialogs():
             entity = dialog.entity
             title = getattr(entity, "title", None)
-            if title == group_title and dialog.is_group:
+            if title == group_title and (dialog.is_group or dialog.is_channel):
                 return _to_bot_style_chat_id(entity)
     finally:
         await client.disconnect()
@@ -160,6 +160,8 @@ async def _telethon_create_or_find_group_id(
 ) -> int:
     try:
         from telethon import TelegramClient
+        from telethon.errors import RPCError
+        from telethon.tl.functions.channels import CreateChannelRequest
         from telethon.tl.functions.messages import CreateChatRequest
     except Exception as exc:
         raise RuntimeError(
@@ -180,11 +182,47 @@ async def _telethon_create_or_find_group_id(
     client = TelegramClient(session_path, api_id, api_hash)
     await client.start(phone=phone)
     try:
-        created = await client(CreateChatRequest(users=[], title=group_title))
-        entity = created.chats[0] if getattr(created, "chats", None) else None
-        if entity is None:
-            raise RuntimeError("Telethon group creation returned no chat entity.")
-        return _to_bot_style_chat_id(entity)
+        # Attempt 1: basic group creation.
+        try:
+            created = await client(CreateChatRequest(users=[], title=group_title))
+            entity = created.chats[0] if getattr(created, "chats", None) else None
+            if entity is not None:
+                return _to_bot_style_chat_id(entity)
+        except RPCError:
+            # Fall through to fallback strategy below.
+            pass
+
+        # Some Telegram backends return no direct chat entity for CreateChatRequest.
+        # Re-scan dialogs after a short delay in case the group has been created.
+        await asyncio.sleep(1.0)
+        async for dialog in client.iter_dialogs():
+            entity = dialog.entity
+            title = getattr(entity, "title", None)
+            if title == group_title and (dialog.is_group or dialog.is_channel):
+                return _to_bot_style_chat_id(entity)
+
+        # Attempt 2: create a supergroup (megagroup), which maps to -100... chat id.
+        created_super = await client(
+            CreateChannelRequest(
+                title=group_title,
+                about="NeSy RL monitor group",
+                megagroup=True,
+            )
+        )
+        entity = created_super.chats[0] if getattr(created_super, "chats", None) else None
+        if entity is not None:
+            return _to_bot_style_chat_id(entity)
+
+        # Final discovery pass.
+        await asyncio.sleep(1.0)
+        async for dialog in client.iter_dialogs():
+            entity = dialog.entity
+            title = getattr(entity, "title", None)
+            if title == group_title and (dialog.is_group or dialog.is_channel):
+                return _to_bot_style_chat_id(entity)
+        raise RuntimeError(
+            "Group creation attempted but no matching group could be resolved by title."
+        )
     finally:
         await client.disconnect()
 
