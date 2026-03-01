@@ -13,6 +13,7 @@ def test_schema_field_indices_are_stable():
     cb = get_schema_for_env("cb")
     nrm = get_schema_for_env("nrm_nav")
     fl = get_schema_for_env("frozenlake")
+    dsrl = get_schema_for_env("dsrl")
 
     assert cb.schema_id == "cb_v1"
     assert cb.field_index("state") == 0
@@ -31,6 +32,12 @@ def test_schema_field_indices_are_stable():
     assert fl.field_index("action") == 1
     assert fl.field_index("reward") == 2
     assert fl.field_index("safety_cost") == 3
+
+    assert dsrl.schema_id == "dsrl_v1"
+    assert dsrl.field_index("state") == 0
+    assert dsrl.field_index("action") == 1
+    assert dsrl.field_index("reward") == 2
+    assert dsrl.field_index("safety_cost") == 3
 
 
 def test_cb_dataset_matches_schema_contract():

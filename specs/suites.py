@@ -26,6 +26,13 @@ SUITE_REGISTRY = {
             "avoid_unsafe",
         ]
     },
+    "dsrl": {
+        "v1": [
+            "avoid_unsafe",
+            "reach_goal",
+            "reach_goal_while_avoid_unsafe",
+        ]
+    },
 }
 
 

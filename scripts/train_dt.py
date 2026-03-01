@@ -37,7 +37,12 @@ def get_arg_parser(add_help=True):
         add_help=add_help,
         description="Train Decision Transformer baseline (discrete envs).",
     )
-    p.add_argument("--env", type=str, choices=["cb", "frozenlake", "antmaze"], default="frozenlake")
+    p.add_argument(
+        "--env",
+        type=str,
+        choices=["cb", "frozenlake", "dsrl", "antmaze"],
+        default="frozenlake",
+    )
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--smoke", action="store_true")
 
@@ -68,6 +73,12 @@ def get_arg_parser(add_help=True):
     p.add_argument("--frozenlake_map_size", type=str, choices=["4x4", "8x8"], default="4x4")
     p.add_argument("--frozenlake_is_slippery", action="store_true")
     p.add_argument("--policy_mix", type=float, default=0.0)
+    p.add_argument("--dsrl_dataset_path", type=str, default=None)
+    p.add_argument("--dsrl_dataset_key", type=str, default="PointGoal1")
+    p.add_argument("--dsrl_state_bins", type=int, default=128)
+    p.add_argument("--dsrl_action_bins", type=int, default=16)
+    p.add_argument("--dsrl_reward_goal_threshold", type=float, default=0.0)
+    p.add_argument("--dsrl_download", action="store_true")
 
     p.add_argument("--run_dir", type=str, default=None)
     p.add_argument("--base_runs_dir", type=str, default="runs")

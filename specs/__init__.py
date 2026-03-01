@@ -2,6 +2,7 @@
 
 from specs.antmaze_specs import SPECS as ANTMAZE_SPECS
 from specs.cb_specs import SPECS as CB_SPECS
+from specs.dsrl_specs import SPECS as DSRL_SPECS
 from specs.frozenlake_specs import SPECS as FROZENLAKE_SPECS
 from specs.nrm_nav_specs import SPECS as NRM_NAV_SPECS
 
@@ -10,6 +11,7 @@ SPEC_REGISTRY = {
     "nrm_nav": NRM_NAV_SPECS,
     "frozenlake": FROZENLAKE_SPECS,
     "antmaze": ANTMAZE_SPECS,
+    "dsrl": DSRL_SPECS,
 }
 
 

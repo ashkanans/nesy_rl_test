@@ -8,22 +8,21 @@ from train_cb import resolve_formulas
 
 
 def test_all_spec_files_exist_in_registry():
-    for env_name in ["cb", "nrm_nav", "frozenlake", "antmaze"]:
+    for env_name in ["cb", "nrm_nav", "frozenlake", "antmaze", "dsrl"]:
         assert env_name in SPEC_REGISTRY
         assert len(SPEC_REGISTRY[env_name]) > 0
 
 
 def test_all_spec_formulas_compile():
-    adapter = TTDFAAdapter(
-        observation_dim=1,
-        action_dim=0,
-        num_bins=[128],
-        include_reward=False,
-        include_value=False,
-        use_stop_token=True,
-    )
-
     for env_name, presets in SPEC_REGISTRY.items():
+        adapter = TTDFAAdapter(
+            observation_dim=1,
+            action_dim=1,
+            num_bins=[128, 16, 2, 2],
+            include_reward=True,
+            include_value=True,
+            use_stop_token=True,
+        )
         for preset_name, cfg in presets.items():
             for idx, formula in enumerate(cfg["formulas"]):
                 dfa = adapter.create_dfa_from_ltl(

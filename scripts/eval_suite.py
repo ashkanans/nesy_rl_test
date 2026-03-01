@@ -52,11 +52,13 @@ def _parse_args():
     if args.checkpoint is None and not args.allow_train_fallback:
         raise ValueError("--checkpoint is required unless --allow_train_fallback is set.")
     if args.model_type == "tt":
-        if args.env not in {"cb", "frozenlake", "nrm_nav"}:
-            raise ValueError("eval_suite with model_type=tt supports env in {cb, frozenlake, nrm_nav}.")
+        if args.env not in {"cb", "frozenlake", "nrm_nav", "dsrl"}:
+            raise ValueError(
+                "eval_suite with model_type=tt supports env in {cb, frozenlake, nrm_nav, dsrl}."
+            )
     else:
-        if args.env not in {"cb", "frozenlake"}:
-            raise ValueError("eval_suite with model_type=dt currently supports env in {cb, frozenlake}.")
+        if args.env not in {"cb", "frozenlake", "dsrl"}:
+            raise ValueError("eval_suite with model_type=dt currently supports env in {cb, frozenlake, dsrl}.")
     return args
 
 
@@ -115,6 +117,15 @@ def _run_eval_subprocess(args, preset: str, run_dir: str) -> dict:
             if args.frozenlake_is_slippery:
                 cmd.append("--frozenlake_is_slippery")
             cmd.extend(["--policy_mix", str(args.policy_mix)])
+        if args.env == "dsrl":
+            if args.dsrl_dataset_path is not None:
+                cmd.extend(["--dsrl_dataset_path", str(args.dsrl_dataset_path)])
+            cmd.extend(["--dsrl_dataset_key", str(args.dsrl_dataset_key)])
+            cmd.extend(["--dsrl_state_bins", str(args.dsrl_state_bins)])
+            cmd.extend(["--dsrl_action_bins", str(args.dsrl_action_bins)])
+            cmd.extend(["--dsrl_reward_goal_threshold", str(args.dsrl_reward_goal_threshold)])
+            if args.dsrl_download:
+                cmd.append("--dsrl_download")
     else:
         cmd = [
             sys.executable,
@@ -154,6 +165,15 @@ def _run_eval_subprocess(args, preset: str, run_dir: str) -> dict:
             cmd.extend(["--frozenlake_map_size", args.frozenlake_map_size])
             if args.frozenlake_is_slippery:
                 cmd.append("--frozenlake_is_slippery")
+        if args.env == "dsrl":
+            if args.dsrl_dataset_path is not None:
+                cmd.extend(["--dsrl_dataset_path", str(args.dsrl_dataset_path)])
+            cmd.extend(["--dsrl_dataset_key", str(args.dsrl_dataset_key)])
+            cmd.extend(["--dsrl_state_bins", str(args.dsrl_state_bins)])
+            cmd.extend(["--dsrl_action_bins", str(args.dsrl_action_bins)])
+            cmd.extend(["--dsrl_reward_goal_threshold", str(args.dsrl_reward_goal_threshold)])
+            if args.dsrl_download:
+                cmd.append("--dsrl_download")
 
     subprocess.run(cmd, check=True, cwd=REPO_ROOT)
     with open(os.path.join(run_dir, "metrics.json"), "r") as f:

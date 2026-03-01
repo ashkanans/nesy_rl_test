@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 
 from datasets.cb_dataset import CBSequenceDataset
+from datasets.dsrl_dataset import DSRLSequenceDataset
 from datasets.dt_dataset import DTSequenceDataset
 from datasets.frozenlake_dataset import FrozenLakeSequenceDataset
 from planning.eval_runtime import write_json
@@ -88,6 +89,21 @@ def build_dt_offline_source(args):
             map_size=args.frozenlake_map_size,
             is_slippery=args.frozenlake_is_slippery,
             policy_mix=args.policy_mix,
+        )
+        return dataset, None
+    if args.env == "dsrl":
+        dataset = DSRLSequenceDataset(
+            dataset_path=getattr(args, "dsrl_dataset_path", None),
+            dataset_key=getattr(args, "dsrl_dataset_key", "PointGoal1"),
+            sequence_length=max(8, args.context_len * 4),
+            seed=args.seed,
+            max_steps=args.max_steps,
+            num_episodes=args.num_episodes,
+            state_bins=getattr(args, "dsrl_state_bins", 128),
+            action_bins=getattr(args, "dsrl_action_bins", 16),
+            reward_goal_threshold=getattr(args, "dsrl_reward_goal_threshold", 0.0),
+            target_shift="token",
+            download=getattr(args, "dsrl_download", False),
         )
         return dataset, None
     if args.env == "antmaze":
@@ -177,6 +193,9 @@ def hazard_mask_for_env(env_name: str, env):
         for s in range(n_states):
             pos = env._state_to_pos(s)
             mask[s] = 1.0 if pos in getattr(env, "unsafe_positions", set()) else 0.0
+    elif env_name == "dsrl" and hasattr(env, "is_unsafe_state"):
+        for s in range(n_states):
+            mask[s] = 1.0 if env.is_unsafe_state(s) else 0.0
     return mask
 
 
@@ -395,6 +414,8 @@ def _cost_token_from_terminal(env_name: str, terminal_type: str | None) -> int:
         return 1 if terminal_type == "H" else 0
     if env_name == "nrm_nav":
         return 1 if terminal_type == "X" else 0
+    if env_name == "dsrl":
+        return 1 if terminal_type == "X" else 0
     return 0
 
 
@@ -404,6 +425,8 @@ def _is_hazard_terminal(env_name: str, terminal_type: str | None) -> bool:
     if env_name == "cb":
         return terminal_type == "B"
     if env_name == "nrm_nav":
+        return terminal_type == "X"
+    if env_name == "dsrl":
         return terminal_type == "X"
     return False
 
@@ -820,6 +843,7 @@ def evaluate_dt_policy(
             step_count += 1
 
             terminal_type = info.get("terminal_type")
+            reward_token = 0
             if env_name == "frozenlake":
                 if terminal_type == "G":
                     hit_goal = True
@@ -838,11 +862,18 @@ def evaluate_dt_policy(
                 if terminal_type == "X":
                     hit_hazard = True
                 cost_token = 1 if terminal_type == "X" else 0
+            elif env_name == "dsrl":
+                if bool(info.get("goal", False)) or terminal_type == "G":
+                    hit_goal = True
+                if float(info.get("cost", 0.0)) > 0.0 or terminal_type == "X":
+                    hit_hazard = True
+                cost_token = 1 if float(info.get("cost", 0.0)) > 0.0 else 0
+                reward_token = 1 if (bool(info.get("goal", False)) or float(reward) > 0.0) else 0
             else:
                 cost_token = 0
 
             step_violations += int(cost_token > 0)
-            trans_tokens = [int(action), 0, int(cost_token), int(next_obs)]
+            trans_tokens = [int(action), int(reward_token), int(cost_token), int(next_obs)]
             token_offset = len(tokens)
             tokens.extend(trans_tokens)
             if dfa_state is not None:
@@ -993,6 +1024,11 @@ def evaluate_random_policy(env, env_name: str, seed: int, eval_num_episodes: int
                 if terminal_type in {"P", "Y", "BLU"}:
                     hit_goal = True
                 if terminal_type == "B":
+                    hit_hazard = True
+            elif env_name == "dsrl":
+                if bool(info.get("goal", False)) or terminal_type == "G":
+                    hit_goal = True
+                if float(info.get("cost", 0.0)) > 0.0 or terminal_type == "X":
                     hit_hazard = True
         returns.append(total_r)
         goal_hits += int(hit_goal)

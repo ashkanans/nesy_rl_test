@@ -53,7 +53,7 @@ def parse_eval_args():
         "--spec",
         type=str,
         default=None,
-        help="Named spec preset. Runtime support: cb, nrm_nav, frozenlake.",
+        help="Named spec preset. Runtime support: cb, nrm_nav, frozenlake, dsrl.",
     )
     parser.add_argument(
         "--dfa_mode",

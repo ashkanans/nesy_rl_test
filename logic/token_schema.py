@@ -81,6 +81,18 @@ SCHEMA_REGISTRY: Dict[str, TokenSchemaDefinition] = {
             TokenField("safety_cost", 3, "Binary safety cost token.", 2),
         ),
     ),
+    "dsrl_v1": TokenSchemaDefinition(
+        schema_id="dsrl_v1",
+        env_name="dsrl",
+        width=4,
+        dtype="int64",
+        fields=(
+            TokenField("state", 0, "Discretized state token."),
+            TokenField("action", 1, "Discretized action token."),
+            TokenField("reward", 2, "Goal-indicator reward token (0/1).", 2),
+            TokenField("safety_cost", 3, "Binary safety cost token.", 2),
+        ),
+    ),
 }
 
 ENV_TO_SCHEMA_ID = {
@@ -88,6 +100,7 @@ ENV_TO_SCHEMA_ID = {
     "nrm_nav": "nrm_nav_v1",
     "frozenlake": "frozenlake_v1",
     "antmaze": "antmaze_v1",
+    "dsrl": "dsrl_v1",
 }
 
 

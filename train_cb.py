@@ -22,6 +22,7 @@ from FiniteStateMachine import DFA
 from datasets.cb_dataset import CBSequenceDataset
 from dfa_adapter import TTDFAAdapter, get_num_bins_per_dim_for_env
 from dfa_utils import export_dfa_artifacts
+from datasets.dsrl_dataset import DSRLSequenceDataset
 from datasets.frozenlake_dataset import FrozenLakeSequenceDataset
 from datasets.nrm_nav_dataset import NRMSafetySequenceDataset
 from envs.nrm_nav_env import NRMSafetyNavEnv
@@ -98,7 +99,7 @@ def resolve_formulas(args, dataset=None):
         raise ValueError("Provide either --spec or --ltl_formula(s), not both.")
 
     if args.spec is not None:
-        if args.env in {"cb", "nrm_nav"}:
+        if args.env in {"cb", "nrm_nav", "dsrl"}:
             spec = get_spec(args.env, args.spec)
             return list(spec["formulas"])
         if args.env == "frozenlake":
@@ -112,7 +113,7 @@ def resolve_formulas(args, dataset=None):
             spec = get_spec(args.env, args.spec)
             return list(spec["formulas"])
         raise ValueError(
-            "--spec runtime support is currently only available for cb/nrm_nav/frozenlake, "
+            "--spec runtime support is currently only available for cb/nrm_nav/frozenlake/dsrl, "
             f"got env={args.env}"
         )
 
@@ -277,6 +278,20 @@ def build_dataset(args):
             seed=args.seed,
             grid=None,
             target_shift=args.target_shift,
+        )
+    elif args.env == "dsrl":
+        return DSRLSequenceDataset(
+            dataset_path=args.dsrl_dataset_path,
+            dataset_key=args.dsrl_dataset_key,
+            sequence_length=args.block_size,
+            seed=args.seed,
+            max_steps=args.max_steps,
+            num_episodes=args.num_episodes,
+            state_bins=args.dsrl_state_bins,
+            action_bins=args.dsrl_action_bins,
+            reward_goal_threshold=args.dsrl_reward_goal_threshold,
+            target_shift=args.target_shift,
+            download=args.dsrl_download,
         )
     else:
         raise ValueError(f"Unknown env {args.env}")
@@ -789,7 +804,7 @@ def get_arg_parser(add_help=True):
     p.add_argument("--discount", type=float, default=0.99)
     p.add_argument("--stochastic", action="store_true")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--env", type=str, choices=["cb", "nrm_nav", "frozenlake"], default="cb")
+    p.add_argument("--env", type=str, choices=["cb", "nrm_nav", "frozenlake", "dsrl"], default="cb")
     p.add_argument(
         "--smoke",
         action="store_true",
@@ -838,6 +853,41 @@ def get_arg_parser(add_help=True):
         action="store_true",
         help="Enable FrozenLake position-bin proposition expansion when building spec formulas.",
     )
+    p.add_argument(
+        "--dsrl_dataset_path",
+        type=str,
+        default=None,
+        help="Path to DSRL HDF5 dataset file. If omitted, resolves from local DSRL catalog.",
+    )
+    p.add_argument(
+        "--dsrl_dataset_key",
+        type=str,
+        default="PointGoal1",
+        help="DSRL dataset key (e.g., PointGoal1, PointCircle1, AntVelocity).",
+    )
+    p.add_argument(
+        "--dsrl_state_bins",
+        type=int,
+        default=128,
+        help="Number of discrete bins used for DSRL state-token discretization.",
+    )
+    p.add_argument(
+        "--dsrl_action_bins",
+        type=int,
+        default=16,
+        help="Number of discrete bins used for DSRL action-token discretization.",
+    )
+    p.add_argument(
+        "--dsrl_reward_goal_threshold",
+        type=float,
+        default=0.0,
+        help="Reward threshold for goal proposition tokenization in DSRL.",
+    )
+    p.add_argument(
+        "--dsrl_download",
+        action="store_true",
+        help="Allow downloading DSRL dataset from URL resolved by catalog when local file is missing.",
+    )
 
     p.add_argument("--ltl_formula", type=str, default=None)
     p.add_argument("--ltl_formulas", type=str, nargs="+", default=None, help="List of LTL formulas")
@@ -847,7 +897,7 @@ def get_arg_parser(add_help=True):
         default=None,
         help=(
             "Named spec preset for the selected env. Runtime support currently: "
-            "cb, nrm_nav, frozenlake."
+            "cb, nrm_nav, frozenlake, dsrl."
         ),
     )
     p.add_argument(

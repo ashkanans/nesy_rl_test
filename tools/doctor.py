@@ -45,8 +45,8 @@ def _parse_args():
 
     if args.small_sample:
         args.smoke = True
-    if args.env not in {"cb", "frozenlake", "nrm_nav"}:
-        raise ValueError("tools.doctor currently supports env in {cb, frozenlake, nrm_nav}.")
+    if args.env not in {"cb", "frozenlake", "nrm_nav", "dsrl"}:
+        raise ValueError("tools.doctor currently supports env in {cb, frozenlake, nrm_nav, dsrl}.")
     if args.spec is not None and (args.ltl_formula is not None or args.ltl_formulas is not None):
         raise ValueError("Provide either --spec or --ltl_formula(s), not both.")
     if args.spec is None and args.ltl_formula is None and args.ltl_formulas is None:
@@ -252,6 +252,8 @@ def _doctor_dt_rollout_satisfaction(
                 cost = 1 if terminal_type == "H" else 0
             elif args.env == "nrm_nav":
                 cost = 1 if terminal_type == "X" else 0
+            elif args.env == "dsrl":
+                cost = 1 if float(info.get("cost", 0.0)) > 0.0 else 0
 
             rows.append(
                 np.asarray([int(obs), int(action), 0, int(cost)], dtype=np.int64)

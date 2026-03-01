@@ -74,7 +74,7 @@ def apply_smoke_mode(args):
 
     # Caps tuned for <=2 minutes end-to-end on CPU in this repository.
     if hasattr(args, "num_episodes"):
-        cap = 200 if getattr(args, "env", None) == "frozenlake" else 64
+        cap = 200 if getattr(args, "env", None) in {"frozenlake", "dsrl"} else 64
         args.num_episodes = min(int(args.num_episodes), cap)
     if hasattr(args, "max_steps"):
         args.max_steps = min(int(args.max_steps), 30)
@@ -110,6 +110,8 @@ def apply_smoke_mode(args):
             args.spec = "avoid_state_11"
         elif getattr(args, "env", None) == "frozenlake":
             args.spec = "reach_goal_while_avoid_holes"
+        elif getattr(args, "env", None) == "dsrl":
+            args.spec = "avoid_unsafe"
 
     return args
 
@@ -402,6 +404,8 @@ def _is_unsafe_state(env_name: str, env, state_id: int) -> bool:
         return bool(env.is_bomb_state(int(state_id)))
     if env_name == "frozenlake":
         return bool(env.is_hole_state(int(state_id)))
+    if env_name == "dsrl" and hasattr(env, "is_unsafe_state"):
+        return bool(env.is_unsafe_state(int(state_id)))
     return False
 
 
@@ -425,7 +429,10 @@ def evaluate_policy_rollouts(
     model.eval()
 
     env_cfg = dataset.env.cfg
-    env = type(dataset.env)(env_cfg)
+    if hasattr(dataset.env, "clone"):
+        env = dataset.env.clone()
+    else:
+        env = type(dataset.env)(env_cfg)
     if max_steps is None:
         max_steps = int(env_cfg.max_steps)
 
@@ -498,9 +505,15 @@ def evaluate_policy_rollouts(
                     cost_token = 1 if terminal_type == "X" else 0
                 elif env_name == "frozenlake":
                     cost_token = 1 if terminal_type == "H" else 0
+                elif env_name == "dsrl":
+                    cost_token = 1 if float(info.get("cost", 0.0)) > 0.0 else 0
                 else:
                     cost_token = 0
-                transition_tokens = [int(action), 0, int(cost_token), int(next_obs)]
+                reward_token = 0
+                if env_name == "dsrl":
+                    goal_thresh = float(getattr(dataset, "reward_goal_threshold", 0.0))
+                    reward_token = 1 if (float(reward) > goal_thresh or bool(info.get("goal", False))) else 0
+                transition_tokens = [int(action), int(reward_token), int(cost_token), int(next_obs)]
                 tokens.extend(transition_tokens)
 
                 transition_tensor = torch.tensor(
@@ -528,6 +541,11 @@ def evaluate_policy_rollouts(
                     if terminal_type == "G":
                         ep_goal = True
                     if terminal_type == "H":
+                        ep_hazard = True
+                elif env_name == "dsrl":
+                    if bool(info.get("goal", False)) or terminal_type == "G":
+                        ep_goal = True
+                    if float(info.get("cost", 0.0)) > 0.0:
                         ep_hazard = True
 
             tokens_with_end = tokens + [int(adapter.end_token_id), 0, 0, 0]
