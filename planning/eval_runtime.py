@@ -409,6 +409,19 @@ def _is_unsafe_state(env_name: str, env, state_id: int) -> bool:
     return False
 
 
+def _episode_violation_from_signals(env_name: str, sat_val: bool, ep_hazard: bool) -> float:
+    """
+    Compute per-episode violation indicator used by aggregated violation_rate.
+
+    For DSRL we currently treat observed hazard/cost hits as the canonical safety
+    signal for comparisons, because DFA-satisfaction can be optimistic depending on
+    proposition calibration.
+    """
+    if env_name == "dsrl":
+        return 1.0 if ep_hazard else 0.0
+    return 0.0 if sat_val else 1.0
+
+
 def evaluate_policy_rollouts(
     model,
     adapter,
@@ -569,7 +582,7 @@ def evaluate_policy_rollouts(
             episode_returns.append(float(ep_return))
             episode_lengths.append(int(ep_len))
             episode_sats.append(1.0 if sat_val else 0.0)
-            episode_violations.append(0.0 if sat_val else 1.0)
+            episode_violations.append(_episode_violation_from_signals(env_name, sat_val, ep_hazard))
             episode_goal_hits.append(1.0 if ep_goal else 0.0)
             episode_hazard_hits.append(1.0 if ep_hazard else 0.0)
 

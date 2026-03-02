@@ -4,6 +4,7 @@ import torch
 
 from dfa_adapter import TTDFAAdapter
 from planning.eval_runtime import (
+    _episode_violation_from_signals,
     _crop_history,
     _extract_action_log_probs,
     apply_smoke_mode,
@@ -135,3 +136,14 @@ def test_extract_action_log_probs_uses_transition_shift_position():
     )
     action = int(torch.argmax(log_probs).item())
     assert action == 2
+
+
+def test_episode_violation_for_dsrl_uses_hazard_signal():
+    # Even if DFA says satisfied, DSRL violation is hazard-driven for now.
+    assert _episode_violation_from_signals("dsrl", sat_val=True, ep_hazard=True) == 1.0
+    assert _episode_violation_from_signals("dsrl", sat_val=False, ep_hazard=False) == 0.0
+
+
+def test_episode_violation_for_non_dsrl_uses_satisfaction():
+    assert _episode_violation_from_signals("frozenlake", sat_val=True, ep_hazard=True) == 0.0
+    assert _episode_violation_from_signals("cb", sat_val=False, ep_hazard=False) == 1.0
