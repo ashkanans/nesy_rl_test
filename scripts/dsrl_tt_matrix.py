@@ -4,17 +4,25 @@ import argparse
 import csv
 import json
 import os
+import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+class GpuUnavailableError(RuntimeError):
+    pass
 
 
 @dataclass
@@ -42,6 +50,10 @@ class RunConfig:
     download_sleep_sec: float
     continue_on_error: bool
     dry_run: bool
+    parallel_workers: int
+    require_gpu: bool
+    gpu_check_interval_sec: float
+    gpu_worker_map: list[int] | None
 
 
 def _parse_args() -> argparse.Namespace:
@@ -109,6 +121,25 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--continue_on_error", action="store_true", help="Continue matrix even when one run fails.")
     p.add_argument("--dry_run", action="store_true", help="Print commands only.")
     p.add_argument("--smoke", action="store_true", help="Small local smoke run.")
+    p.add_argument("--parallel_workers", type=int, default=1, help="Number of parallel dataset workers.")
+    p.add_argument(
+        "--gpu_worker_map",
+        type=str,
+        default=None,
+        help="Comma-separated GPU ids for workers, e.g. '0,0,1,1'. Length must equal --parallel_workers.",
+    )
+    p.add_argument(
+        "--require_gpu",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Require CUDA availability before starting each dataset and while each run command executes.",
+    )
+    p.add_argument(
+        "--gpu_check_interval_sec",
+        type=float,
+        default=10.0,
+        help="Polling interval while subprocess runs (seconds) for GPU health checks.",
+    )
     return p.parse_args()
 
 
@@ -171,11 +202,88 @@ def _download_with_retry(url: str, dst: Path, retries: int, sleep_sec: float) ->
     raise RuntimeError(f"Failed to download {url}: {last_err}")
 
 
-def _run(cmd: list[str], dry_run: bool) -> None:
-    print("[run]", " ".join(cmd), flush=True)
-    if dry_run:
+def _env_for_gpu(gpu_id: int | None) -> dict[str, str]:
+    env = os.environ.copy()
+    if gpu_id is not None:
+        env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    return env
+
+
+def _gpu_visible(gpu_id: int) -> bool:
+    if shutil.which("nvidia-smi") is None:
+        return False
+    proc = subprocess.run(
+        ["nvidia-smi", "-i", str(gpu_id), "--query-gpu=name", "--format=csv,noheader"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.returncode == 0
+
+
+def _torch_cuda_available(python_bin: str, gpu_id: int) -> bool:
+    env = _env_for_gpu(gpu_id)
+    proc = subprocess.run(
+        [python_bin, "-c", "import torch,sys; sys.exit(0 if torch.cuda.is_available() and torch.cuda.device_count() > 0 else 1)"],
+        cwd=REPO_ROOT,
+        env=env,
+        check=False,
+    )
+    return proc.returncode == 0
+
+
+def _assert_gpu_or_raise(cfg: RunConfig, gpu_id: int, context: str) -> None:
+    if not cfg.require_gpu:
         return
-    subprocess.run(cmd, cwd=REPO_ROOT, check=True)
+    if not _gpu_visible(gpu_id):
+        raise GpuUnavailableError(f"[{context}] GPU {gpu_id} unavailable via nvidia-smi.")
+    if not _torch_cuda_available(cfg.python_bin, gpu_id):
+        raise GpuUnavailableError(f"[{context}] GPU {gpu_id} unavailable via torch.cuda.")
+
+
+def _run(
+    cmd: list[str],
+    *,
+    cfg: RunConfig,
+    gpu_id: int | None,
+    stop_event: threading.Event,
+) -> None:
+    print("[run]", " ".join(cmd), flush=True)
+    if cfg.dry_run:
+        return
+
+    env = _env_for_gpu(gpu_id)
+    if gpu_id is not None:
+        _assert_gpu_or_raise(cfg, gpu_id, context="pre-run")
+
+    proc = subprocess.Popen(cmd, cwd=REPO_ROOT, env=env)
+    try:
+        while True:
+            if stop_event.is_set():
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                raise RuntimeError("Stop requested due to failure in another worker.")
+
+            code = proc.poll()
+            if code is not None:
+                if code != 0:
+                    raise subprocess.CalledProcessError(code, cmd)
+                return
+
+            if gpu_id is not None and cfg.require_gpu:
+                _assert_gpu_or_raise(cfg, gpu_id, context="mid-run")
+            time.sleep(max(1.0, float(cfg.gpu_check_interval_sec)))
+    except Exception:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        raise
 
 
 def _read_metrics_rows(csv_path: Path, mode: str) -> list[dict]:
@@ -222,12 +330,11 @@ def _read_metrics_rows(csv_path: Path, mode: str) -> list[dict]:
     return rows
 
 
-def _save_spec_aggregate(spec_dir: Path) -> None:
+def _save_spec_aggregate(spec_dir: Path, decoding_modes: list[str]) -> None:
     rows: list[dict] = []
-    for mode in ["greedy", "beam", "constrained_beam"]:
+    for mode in decoding_modes:
         csv_path = spec_dir / mode / "baseline_metrics.csv"
         rows.extend(_read_metrics_rows(csv_path, mode=mode))
-
     if not rows:
         return
 
@@ -317,6 +424,177 @@ def _save_spec_aggregate(spec_dir: Path) -> None:
     plt.close()
 
 
+def _process_row(
+    row: dict[str, Any],
+    *,
+    cfg: RunConfig,
+    gpu_id: int | None,
+    stop_event: threading.Event,
+    progress_counter: list[int],
+    progress_lock: threading.Lock,
+    total_jobs: int,
+) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+
+    key = str(row["dataset_key"])
+    family = str(row.get("family", "unknown_family"))
+    diff = str(row.get("difficulty", "unspecified"))
+    url = row.get("dataset_url")
+    ds_path = cfg.dataset_cache_dir / f"{key}.hdf5"
+
+    if stop_event.is_set():
+        return failures
+
+    # Before starting each dataset, verify GPU if required.
+    if gpu_id is not None:
+        _assert_gpu_or_raise(cfg, gpu_id, context=f"dataset-start:{key}")
+
+    try:
+        if not ds_path.exists():
+            if not cfg.download_if_missing:
+                raise FileNotFoundError(f"Dataset not found in cache and download disabled: {ds_path}")
+            if not url:
+                raise ValueError(f"Missing dataset_url in catalog for key={key}")
+            _download_with_retry(
+                str(url),
+                ds_path,
+                retries=cfg.download_retries,
+                sleep_sec=cfg.download_sleep_sec,
+            )
+    except Exception as exc:
+        failures.append({"dataset_key": key, "stage": "dataset_prepare", "error": str(exc)})
+        if not cfg.continue_on_error:
+            raise
+        return failures
+
+    for spec in cfg.specs:
+        spec_dir = cfg.output_root / family / diff / key / spec
+        for mode in cfg.decoding_modes:
+            if stop_event.is_set():
+                return failures
+            mode_dir = spec_dir / mode
+            mode_dir.mkdir(parents=True, exist_ok=True)
+            with progress_lock:
+                progress_counter[0] += 1
+                cur = progress_counter[0]
+            print(
+                f"[job {cur}/{total_jobs}] worker_gpu={gpu_id} dataset={key} spec={spec} mode={mode}",
+                flush=True,
+            )
+
+            if (mode_dir / "baseline_metrics.csv").exists():
+                print(f"[skip] Existing output: {mode_dir / 'baseline_metrics.csv'}", flush=True)
+                continue
+
+            cmd = [
+                cfg.python_bin,
+                "scripts/run_baselines.py",
+                "--env",
+                "dsrl",
+                "--spec",
+                spec,
+                "--seed",
+                str(cfg.seed),
+                "--target_shift",
+                cfg.target_shift,
+                "--dsrl_dataset_path",
+                str(ds_path),
+                "--num_episodes",
+                str(cfg.num_episodes),
+                "--max_steps",
+                str(cfg.max_steps),
+                "--epochs",
+                str(cfg.epochs),
+                "--batch_size",
+                str(cfg.batch_size),
+                "--block_size",
+                str(cfg.block_size),
+                "--n_layer",
+                str(cfg.n_layer),
+                "--n_head",
+                str(cfg.n_head),
+                "--n_embd",
+                str(cfg.n_embd),
+                "--evaluate",
+                "--eval_num_episodes",
+                str(cfg.eval_num_episodes),
+                "--eval_max_steps",
+                str(cfg.eval_max_steps),
+                "--baselines",
+                "logic",
+                "--alphas",
+            ] + [str(a) for a in cfg.alphas] + _decode_args(mode) + ["--base_run_dir", str(mode_dir)]
+
+            try:
+                _run(cmd, cfg=cfg, gpu_id=gpu_id, stop_event=stop_event)
+            except GpuUnavailableError:
+                stop_event.set()
+                raise
+            except Exception as exc:
+                failures.append(
+                    {
+                        "dataset_key": key,
+                        "family": family,
+                        "difficulty": diff,
+                        "spec": spec,
+                        "mode": mode,
+                        "stage": "run_baselines",
+                        "error": str(exc),
+                    }
+                )
+                if not cfg.continue_on_error:
+                    raise
+                continue
+
+        _save_spec_aggregate(spec_dir, cfg.decoding_modes)
+
+    return failures
+
+
+def _worker_loop(
+    worker_idx: int,
+    rows: list[dict[str, Any]],
+    *,
+    cfg: RunConfig,
+    gpu_id: int | None,
+    stop_event: threading.Event,
+    progress_counter: list[int],
+    progress_lock: threading.Lock,
+    total_jobs: int,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if stop_event.is_set():
+            break
+        try:
+            out.extend(
+                _process_row(
+                    row,
+                    cfg=cfg,
+                    gpu_id=gpu_id,
+                    stop_event=stop_event,
+                    progress_counter=progress_counter,
+                    progress_lock=progress_lock,
+                    total_jobs=total_jobs,
+                )
+            )
+        except GpuUnavailableError as exc:
+            stop_event.set()
+            raise GpuUnavailableError(f"worker={worker_idx} gpu={gpu_id}: {exc}") from exc
+    return out
+
+
+def _resolve_gpu_worker_map(args: argparse.Namespace) -> list[int] | None:
+    if args.gpu_worker_map:
+        parsed = [int(x.strip()) for x in str(args.gpu_worker_map).split(",") if x.strip() != ""]
+        if len(parsed) != int(args.parallel_workers):
+            raise ValueError(
+                f"--gpu_worker_map length ({len(parsed)}) must equal --parallel_workers ({args.parallel_workers})."
+            )
+        return parsed
+    return None
+
+
 def main() -> None:
     args = _parse_args()
     _apply_smoke(args)
@@ -348,6 +626,10 @@ def main() -> None:
         download_sleep_sec=float(args.download_sleep_sec),
         continue_on_error=bool(args.continue_on_error),
         dry_run=bool(args.dry_run),
+        parallel_workers=max(1, int(args.parallel_workers)),
+        require_gpu=bool(args.require_gpu),
+        gpu_check_interval_sec=float(args.gpu_check_interval_sec),
+        gpu_worker_map=_resolve_gpu_worker_map(args),
     )
 
     catalog_path = Path(args.catalog_path)
@@ -363,105 +645,67 @@ def main() -> None:
     if args.max_datasets is not None:
         rows = rows[: int(args.max_datasets)]
 
-    failures = []
     total = len(rows) * len(cfg.specs) * len(cfg.decoding_modes)
-    done = 0
+    progress_counter = [0]
+    progress_lock = threading.Lock()
+    stop_event = threading.Event()
+    failures: list[dict[str, Any]] = []
 
-    for row in rows:
-        key = str(row["dataset_key"])
-        family = str(row.get("family", "unknown_family"))
-        diff = str(row.get("difficulty", "unspecified"))
-        url = row.get("dataset_url")
-        ds_path = cfg.dataset_cache_dir / f"{key}.hdf5"
+    if cfg.parallel_workers == 1:
+        worker_rows = [rows]
+    else:
+        worker_rows = [rows[i:: cfg.parallel_workers] for i in range(cfg.parallel_workers)]
 
-        try:
-            if not ds_path.exists():
-                if not cfg.download_if_missing:
-                    raise FileNotFoundError(f"Dataset not found in cache and download disabled: {ds_path}")
-                if not url:
-                    raise ValueError(f"Missing dataset_url in catalog for key={key}")
-                _download_with_retry(
-                    str(url),
-                    ds_path,
-                    retries=cfg.download_retries,
-                    sleep_sec=cfg.download_sleep_sec,
-                )
-        except Exception as exc:
-            failures.append({"dataset_key": key, "stage": "dataset_prepare", "error": str(exc)})
-            if not cfg.continue_on_error:
-                raise
-            continue
+    if cfg.gpu_worker_map is None:
+        gpu_map = [None] * cfg.parallel_workers
+    else:
+        gpu_map = list(cfg.gpu_worker_map)
 
-        for spec in cfg.specs:
-            spec_dir = cfg.output_root / family / diff / key / spec
-            for mode in cfg.decoding_modes:
-                mode_dir = spec_dir / mode
-                mode_dir.mkdir(parents=True, exist_ok=True)
-                done += 1
-                print(f"[job {done}/{total}] dataset={key} spec={spec} mode={mode}", flush=True)
+    if cfg.require_gpu and any(g is None for g in gpu_map):
+        raise ValueError("When --require_gpu is enabled, provide --gpu_worker_map (e.g. 0,0,1,1).")
 
-                if (mode_dir / "baseline_metrics.csv").exists():
-                    print(f"[skip] Existing output: {mode_dir / 'baseline_metrics.csv'}", flush=True)
-                    continue
+    print(
+        f"[config] workers={cfg.parallel_workers} gpu_map={gpu_map} rows={len(rows)} total_jobs={total} require_gpu={cfg.require_gpu}",
+        flush=True,
+    )
 
-                cmd = [
-                    cfg.python_bin,
-                    "scripts/run_baselines.py",
-                    "--env",
-                    "dsrl",
-                    "--spec",
-                    spec,
-                    "--seed",
-                    str(cfg.seed),
-                    "--target_shift",
-                    cfg.target_shift,
-                    "--dsrl_dataset_path",
-                    str(ds_path),
-                    "--num_episodes",
-                    str(cfg.num_episodes),
-                    "--max_steps",
-                    str(cfg.max_steps),
-                    "--epochs",
-                    str(cfg.epochs),
-                    "--batch_size",
-                    str(cfg.batch_size),
-                    "--block_size",
-                    str(cfg.block_size),
-                    "--n_layer",
-                    str(cfg.n_layer),
-                    "--n_head",
-                    str(cfg.n_head),
-                    "--n_embd",
-                    str(cfg.n_embd),
-                    "--evaluate",
-                    "--eval_num_episodes",
-                    str(cfg.eval_num_episodes),
-                    "--eval_max_steps",
-                    str(cfg.eval_max_steps),
-                    "--baselines",
-                    "logic",
-                    "--alphas",
-                ] + [str(a) for a in cfg.alphas] + _decode_args(mode) + ["--base_run_dir", str(mode_dir)]
-
-                try:
-                    _run(cmd, dry_run=cfg.dry_run)
-                except Exception as exc:
-                    failures.append(
-                        {
-                            "dataset_key": key,
-                            "family": family,
-                            "difficulty": diff,
-                            "spec": spec,
-                            "mode": mode,
-                            "stage": "run_baselines",
-                            "error": str(exc),
-                        }
+    if cfg.parallel_workers == 1:
+        failures.extend(
+            _worker_loop(
+                worker_idx=0,
+                rows=worker_rows[0],
+                cfg=cfg,
+                gpu_id=gpu_map[0],
+                stop_event=stop_event,
+                progress_counter=progress_counter,
+                progress_lock=progress_lock,
+                total_jobs=total,
+            )
+        )
+    else:
+        with ThreadPoolExecutor(max_workers=cfg.parallel_workers) as ex:
+            futs = []
+            for i in range(cfg.parallel_workers):
+                futs.append(
+                    ex.submit(
+                        _worker_loop,
+                        i,
+                        worker_rows[i],
+                        cfg=cfg,
+                        gpu_id=gpu_map[i],
+                        stop_event=stop_event,
+                        progress_counter=progress_counter,
+                        progress_lock=progress_lock,
+                        total_jobs=total,
                     )
-                    if not cfg.continue_on_error:
-                        raise
-                    continue
-
-            _save_spec_aggregate(spec_dir)
+                )
+            for fut in as_completed(futs):
+                try:
+                    failures.extend(fut.result())
+                except GpuUnavailableError:
+                    stop_event.set()
+                    # hard fail on GPU loss as requested
+                    raise
 
     summary = {
         "catalog_path": str(catalog_path),
@@ -472,6 +716,9 @@ def main() -> None:
         "alphas": cfg.alphas,
         "seed": cfg.seed,
         "jobs_total": total,
+        "parallel_workers": cfg.parallel_workers,
+        "gpu_worker_map": gpu_map,
+        "require_gpu": cfg.require_gpu,
         "failures": failures,
     }
     (cfg.output_root / "summary.json").write_text(json.dumps(summary, indent=2))
