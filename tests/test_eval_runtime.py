@@ -4,6 +4,7 @@ import torch
 
 from dfa_adapter import TTDFAAdapter
 from planning.eval_runtime import (
+    _episode_satisfaction_from_signals,
     _episode_violation_from_signals,
     _crop_history,
     _extract_action_log_probs,
@@ -147,3 +148,13 @@ def test_episode_violation_for_dsrl_uses_hazard_signal():
 def test_episode_violation_for_non_dsrl_uses_satisfaction():
     assert _episode_violation_from_signals("frozenlake", sat_val=True, ep_hazard=True) == 0.0
     assert _episode_violation_from_signals("cb", sat_val=False, ep_hazard=False) == 1.0
+
+
+def test_episode_satisfaction_for_dsrl_uses_hazard_signal():
+    assert _episode_satisfaction_from_signals("dsrl", sat_val=True, ep_hazard=True) == 0.0
+    assert _episode_satisfaction_from_signals("dsrl", sat_val=False, ep_hazard=False) == 1.0
+
+
+def test_episode_satisfaction_for_non_dsrl_uses_dfa_signal():
+    assert _episode_satisfaction_from_signals("frozenlake", sat_val=True, ep_hazard=True) == 1.0
+    assert _episode_satisfaction_from_signals("cb", sat_val=False, ep_hazard=False) == 0.0

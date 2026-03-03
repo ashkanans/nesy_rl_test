@@ -259,6 +259,8 @@ class DSRLSequenceDataset(Dataset):
         state_bins: int = 128,
         action_bins: int = 16,
         reward_goal_threshold: float = 0.0,
+        cost_unsafe_threshold: float = 0.0,
+        cost_unsafe_quantile: float | None = None,
         target_shift: str = "token",
         download: bool = False,
     ):
@@ -270,6 +272,10 @@ class DSRLSequenceDataset(Dataset):
         self.schema_id = self.token_schema.schema_id
         self.dataset_key = str(dataset_key)
         self.reward_goal_threshold = float(reward_goal_threshold)
+        self.cost_unsafe_threshold = float(cost_unsafe_threshold)
+        self.cost_unsafe_quantile = (
+            None if cost_unsafe_quantile is None else float(cost_unsafe_quantile)
+        )
 
         path = Path(dataset_path) if dataset_path is not None else None
         if path is None:
@@ -302,6 +308,11 @@ class DSRLSequenceDataset(Dataset):
             if costs_raw is None
             else np.asarray(costs_raw).reshape(-1).astype(np.float32)
         )
+        if self.cost_unsafe_quantile is not None:
+            q = float(np.clip(self.cost_unsafe_quantile, 0.0, 1.0))
+            positives = costs[costs > 0.0]
+            ref = positives if positives.size > 0 else costs
+            self.cost_unsafe_threshold = float(np.quantile(ref, q))
         if timeouts is not None:
             timeouts = np.asarray(timeouts).reshape(-1).astype(np.float32)
 
@@ -338,7 +349,7 @@ class DSRLSequenceDataset(Dataset):
                 r = float(rewards[i])
                 c = float(costs[i])
                 reward_tok = 1 if r > self.reward_goal_threshold else 0
-                cost_tok = 1 if c > 0.0 else 0
+                cost_tok = 1 if (c > 0.0 and c >= self.cost_unsafe_threshold) else 0
                 rows.append(
                     make_transition_row(
                         schema=self.token_schema,

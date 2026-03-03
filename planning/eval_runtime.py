@@ -422,6 +422,17 @@ def _episode_violation_from_signals(env_name: str, sat_val: bool, ep_hazard: boo
     return 0.0 if sat_val else 1.0
 
 
+def _episode_satisfaction_from_signals(env_name: str, sat_val: bool, ep_hazard: bool) -> float:
+    """
+    Compute per-episode satisfaction indicator used by aggregated satisfaction_rate.
+
+    For DSRL, keep satisfaction aligned with the primary hazard-based safety signal.
+    """
+    if env_name == "dsrl":
+        return 0.0 if ep_hazard else 1.0
+    return 1.0 if sat_val else 0.0
+
+
 def evaluate_policy_rollouts(
     model,
     adapter,
@@ -579,10 +590,13 @@ def evaluate_policy_rollouts(
                 soft_sat = float(adapter.check_sat_symbol_probs(sym_probs, deep_dfa)[0].item())
                 soft_sats.append(soft_sat)
 
+            episode_violation = _episode_violation_from_signals(env_name, sat_val, ep_hazard)
+            episode_sat = _episode_satisfaction_from_signals(env_name, sat_val, ep_hazard)
+
             episode_returns.append(float(ep_return))
             episode_lengths.append(int(ep_len))
-            episode_sats.append(1.0 if sat_val else 0.0)
-            episode_violations.append(_episode_violation_from_signals(env_name, sat_val, ep_hazard))
+            episode_sats.append(float(episode_sat))
+            episode_violations.append(float(episode_violation))
             episode_goal_hits.append(1.0 if ep_goal else 0.0)
             episode_hazard_hits.append(1.0 if ep_hazard else 0.0)
 

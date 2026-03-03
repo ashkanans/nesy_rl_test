@@ -78,6 +78,8 @@ def get_arg_parser(add_help=True):
     p.add_argument("--dsrl_state_bins", type=int, default=128)
     p.add_argument("--dsrl_action_bins", type=int, default=16)
     p.add_argument("--dsrl_reward_goal_threshold", type=float, default=0.0)
+    p.add_argument("--dsrl_cost_unsafe_threshold", type=float, default=0.0)
+    p.add_argument("--dsrl_cost_unsafe_quantile", type=float, default=None)
     p.add_argument("--dsrl_download", action="store_true")
 
     p.add_argument("--run_dir", type=str, default=None)

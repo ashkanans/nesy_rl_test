@@ -102,6 +102,8 @@ def build_dt_offline_source(args):
             state_bins=getattr(args, "dsrl_state_bins", 128),
             action_bins=getattr(args, "dsrl_action_bins", 16),
             reward_goal_threshold=getattr(args, "dsrl_reward_goal_threshold", 0.0),
+            cost_unsafe_threshold=getattr(args, "dsrl_cost_unsafe_threshold", 0.0),
+            cost_unsafe_quantile=getattr(args, "dsrl_cost_unsafe_quantile", None),
             target_shift="token",
             download=getattr(args, "dsrl_download", False),
         )

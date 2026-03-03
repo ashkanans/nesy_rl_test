@@ -45,6 +45,9 @@ class RunConfig:
     eval_num_episodes: int
     eval_max_steps: int
     target_shift: str
+    dsrl_reward_goal_threshold: float
+    dsrl_cost_unsafe_threshold: float
+    dsrl_cost_unsafe_quantile: float | None
     download_if_missing: bool
     download_retries: int
     download_sleep_sec: float
@@ -79,6 +82,18 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--dataset_keys", nargs="*", default=None, help="Optional subset of dataset keys to run.")
     p.add_argument("--max_datasets", type=int, default=None, help="Optional cap on number of datasets after filtering.")
     p.add_argument(
+        "--families",
+        nargs="*",
+        default=None,
+        help="Optional family filter (e.g. safety_gymnasium bullet_safety_gym metadrive).",
+    )
+    p.add_argument(
+        "--difficulties",
+        nargs="*",
+        default=None,
+        help="Optional difficulty filter (e.g. level_1 level_2 velocity easy medium hard).",
+    )
+    p.add_argument(
         "--specs",
         nargs="+",
         default=["avoid_unsafe", "reach_goal", "reach_goal_while_avoid_unsafe"],
@@ -110,6 +125,9 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--eval_num_episodes", type=int, default=256)
     p.add_argument("--eval_max_steps", type=int, default=200)
     p.add_argument("--target_shift", type=str, default="token", choices=["token", "transition"])
+    p.add_argument("--dsrl_reward_goal_threshold", type=float, default=0.0)
+    p.add_argument("--dsrl_cost_unsafe_threshold", type=float, default=0.0)
+    p.add_argument("--dsrl_cost_unsafe_quantile", type=float, default=None)
     p.add_argument("--python_bin", type=str, default=sys.executable, help="Python executable for subprocess calls.")
     p.add_argument("--download_retries", type=int, default=6)
     p.add_argument("--download_sleep_sec", type=float, default=5.0)
@@ -160,6 +178,8 @@ def _apply_smoke(args: argparse.Namespace) -> None:
     args.n_embd = min(args.n_embd, 64)
     args.eval_num_episodes = min(args.eval_num_episodes, 32)
     args.eval_max_steps = min(args.eval_max_steps, 60)
+    if args.dsrl_cost_unsafe_quantile is None:
+        args.dsrl_cost_unsafe_quantile = 0.8
 
 
 def _utc_stamp() -> str:
@@ -499,6 +519,10 @@ def _process_row(
                 cfg.target_shift,
                 "--dsrl_dataset_path",
                 str(ds_path),
+                "--dsrl_reward_goal_threshold",
+                str(cfg.dsrl_reward_goal_threshold),
+                "--dsrl_cost_unsafe_threshold",
+                str(cfg.dsrl_cost_unsafe_threshold),
                 "--num_episodes",
                 str(cfg.num_episodes),
                 "--max_steps",
@@ -523,7 +547,10 @@ def _process_row(
                 "--baselines",
                 "logic",
                 "--alphas",
-            ] + [str(a) for a in cfg.alphas] + _decode_args(mode) + ["--base_run_dir", str(mode_dir)]
+            ] + [str(a) for a in cfg.alphas]
+            if cfg.dsrl_cost_unsafe_quantile is not None:
+                cmd += ["--dsrl_cost_unsafe_quantile", str(cfg.dsrl_cost_unsafe_quantile)]
+            cmd += _decode_args(mode) + ["--base_run_dir", str(mode_dir)]
 
             try:
                 _run(cmd, cfg=cfg, gpu_id=gpu_id, stop_event=stop_event)
@@ -621,6 +648,11 @@ def main() -> None:
         eval_num_episodes=int(args.eval_num_episodes),
         eval_max_steps=int(args.eval_max_steps),
         target_shift=str(args.target_shift),
+        dsrl_reward_goal_threshold=float(args.dsrl_reward_goal_threshold),
+        dsrl_cost_unsafe_threshold=float(args.dsrl_cost_unsafe_threshold),
+        dsrl_cost_unsafe_quantile=(
+            None if args.dsrl_cost_unsafe_quantile is None else float(args.dsrl_cost_unsafe_quantile)
+        ),
         download_if_missing=not bool(args.no_download_if_missing),
         download_retries=int(args.download_retries),
         download_sleep_sec=float(args.download_sleep_sec),
@@ -642,6 +674,12 @@ def main() -> None:
     if args.dataset_keys:
         keep = set(args.dataset_keys)
         rows = [r for r in rows if r.get("dataset_key") in keep]
+    if args.families:
+        fam_keep = set(args.families)
+        rows = [r for r in rows if str(r.get("family")) in fam_keep]
+    if args.difficulties:
+        diff_keep = set(args.difficulties)
+        rows = [r for r in rows if str(r.get("difficulty", "unspecified")) in diff_keep]
     if args.max_datasets is not None:
         rows = rows[: int(args.max_datasets)]
 
@@ -714,6 +752,9 @@ def main() -> None:
         "specs": cfg.specs,
         "decoding_modes": cfg.decoding_modes,
         "alphas": cfg.alphas,
+        "dsrl_reward_goal_threshold": cfg.dsrl_reward_goal_threshold,
+        "dsrl_cost_unsafe_threshold": cfg.dsrl_cost_unsafe_threshold,
+        "dsrl_cost_unsafe_quantile": cfg.dsrl_cost_unsafe_quantile,
         "seed": cfg.seed,
         "jobs_total": total,
         "parallel_workers": cfg.parallel_workers,

@@ -124,6 +124,9 @@ def _run_eval_subprocess(args, preset: str, run_dir: str) -> dict:
             cmd.extend(["--dsrl_state_bins", str(args.dsrl_state_bins)])
             cmd.extend(["--dsrl_action_bins", str(args.dsrl_action_bins)])
             cmd.extend(["--dsrl_reward_goal_threshold", str(args.dsrl_reward_goal_threshold)])
+            cmd.extend(["--dsrl_cost_unsafe_threshold", str(args.dsrl_cost_unsafe_threshold)])
+            if args.dsrl_cost_unsafe_quantile is not None:
+                cmd.extend(["--dsrl_cost_unsafe_quantile", str(args.dsrl_cost_unsafe_quantile)])
             if args.dsrl_download:
                 cmd.append("--dsrl_download")
     else:
@@ -172,6 +175,9 @@ def _run_eval_subprocess(args, preset: str, run_dir: str) -> dict:
             cmd.extend(["--dsrl_state_bins", str(args.dsrl_state_bins)])
             cmd.extend(["--dsrl_action_bins", str(args.dsrl_action_bins)])
             cmd.extend(["--dsrl_reward_goal_threshold", str(args.dsrl_reward_goal_threshold)])
+            cmd.extend(["--dsrl_cost_unsafe_threshold", str(args.dsrl_cost_unsafe_threshold)])
+            if args.dsrl_cost_unsafe_quantile is not None:
+                cmd.extend(["--dsrl_cost_unsafe_quantile", str(args.dsrl_cost_unsafe_quantile)])
             if args.dsrl_download:
                 cmd.append("--dsrl_download")
 

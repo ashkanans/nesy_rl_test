@@ -98,3 +98,59 @@ def test_dsrl_replay_env_step(tmp_path):
     assert isinstance(float(reward), float)
     assert isinstance(bool(done), bool)
     assert "cost" in info
+
+
+def test_dsrl_cost_unsafe_threshold_changes_tokenization(tmp_path):
+    h5_path = tmp_path / "tiny_dsrl_threshold.hdf5"
+    _write_tiny_dsrl_h5(h5_path)
+
+    base = DSRLSequenceDataset(
+        dataset_path=str(h5_path),
+        sequence_length=8,
+        seed=0,
+        max_steps=10,
+        num_episodes=8,
+        state_bins=16,
+        action_bins=4,
+        cost_unsafe_threshold=0.0,
+        target_shift="token",
+        download=False,
+    )
+    strict = DSRLSequenceDataset(
+        dataset_path=str(h5_path),
+        sequence_length=8,
+        seed=0,
+        max_steps=10,
+        num_episodes=8,
+        state_bins=16,
+        action_bins=4,
+        cost_unsafe_threshold=1.1,
+        target_shift="token",
+        download=False,
+    )
+
+    def _unsafe_count(ds):
+        # schema is [state, action, reward, safety_cost]
+        return int(sum(int(ep[:-1, 3].sum()) for ep in ds.episodes_tokens))
+
+    assert _unsafe_count(base) > 0
+    assert _unsafe_count(strict) == 0
+
+
+def test_dsrl_cost_quantile_sets_threshold(tmp_path):
+    h5_path = tmp_path / "tiny_dsrl_quantile.hdf5"
+    _write_tiny_dsrl_h5(h5_path)
+
+    ds = DSRLSequenceDataset(
+        dataset_path=str(h5_path),
+        sequence_length=8,
+        seed=0,
+        max_steps=10,
+        num_episodes=8,
+        state_bins=16,
+        action_bins=4,
+        cost_unsafe_quantile=1.0,
+        target_shift="token",
+        download=False,
+    )
+    assert ds.cost_unsafe_threshold >= 1.0

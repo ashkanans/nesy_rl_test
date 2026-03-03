@@ -290,6 +290,8 @@ def build_dataset(args):
             state_bins=args.dsrl_state_bins,
             action_bins=args.dsrl_action_bins,
             reward_goal_threshold=args.dsrl_reward_goal_threshold,
+            cost_unsafe_threshold=args.dsrl_cost_unsafe_threshold,
+            cost_unsafe_quantile=args.dsrl_cost_unsafe_quantile,
             target_shift=args.target_shift,
             download=args.dsrl_download,
         )
@@ -882,6 +884,21 @@ def get_arg_parser(add_help=True):
         type=float,
         default=0.0,
         help="Reward threshold for goal proposition tokenization in DSRL.",
+    )
+    p.add_argument(
+        "--dsrl_cost_unsafe_threshold",
+        type=float,
+        default=0.0,
+        help="Cost threshold above which DSRL transition is tagged unsafe.",
+    )
+    p.add_argument(
+        "--dsrl_cost_unsafe_quantile",
+        type=float,
+        default=None,
+        help=(
+            "If set in [0,1], compute unsafe threshold from DSRL cost quantile "
+            "(over positive costs when available). Overrides --dsrl_cost_unsafe_threshold."
+        ),
     )
     p.add_argument(
         "--dsrl_download",
