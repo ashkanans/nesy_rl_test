@@ -46,15 +46,23 @@ class CBSequenceDataset(Dataset):
         seed=0,
         target_shift="token",
         policy_mix_spec="random:1.0",
+        policy_mix_sampling="fixed",
+        policy_mix_normal_spec=None,
         longest_path_max_expansions=500000,
     ):
         self.sequence_length = sequence_length
         self.discount = discount
         self.target_shift = str(target_shift)
         self.policy_mix_spec = str(policy_mix_spec)
+        self.policy_mix_sampling = str(policy_mix_sampling)
+        self.policy_mix_normal_spec = (
+            None if policy_mix_normal_spec is None else str(policy_mix_normal_spec)
+        )
         self.longest_path_max_expansions = int(longest_path_max_expansions)
         if self.target_shift not in {"token", "transition"}:
             raise ValueError("target_shift must be 'token' or 'transition'.")
+        if self.policy_mix_sampling not in {"fixed", "normal"}:
+            raise ValueError("policy_mix_sampling must be 'fixed' or 'normal'.")
         self.token_schema = get_schema_for_env("cb")
         self.schema_id = self.token_schema.schema_id
 
@@ -71,6 +79,9 @@ class CBSequenceDataset(Dataset):
         mix_names, mix_probs = _parse_policy_mix_spec(self.policy_mix_spec)
         self.policy_mix_names = mix_names
         self.policy_mix_probs = mix_probs
+        self.policy_mix_normal_params = _parse_policy_mix_normal_spec(
+            self.policy_mix_normal_spec, self.policy_mix_names, self.policy_mix_probs
+        )
         self.shortest_safe_policy = compute_cb_shortest_safe_policy(self.env, avoid_bombs=True)
         self.shortest_any_policy = compute_cb_shortest_safe_policy(self.env, avoid_bombs=False)
         self.longest_safe_path = compute_cb_longest_safe_path_actions(
@@ -89,7 +100,14 @@ class CBSequenceDataset(Dataset):
             states = []
             actions = []
             rewards = []
-            policy_name = str(rng.choice(self.policy_mix_names, p=self.policy_mix_probs))
+            sampled_probs = _sample_policy_probs(
+                rng=rng,
+                names=self.policy_mix_names,
+                base_probs=self.policy_mix_probs,
+                mode=self.policy_mix_sampling,
+                normal_params=self.policy_mix_normal_params,
+            )
+            policy_name = str(rng.choice(self.policy_mix_names, p=sampled_probs))
             path_step = 0
 
             for t in range(max_steps):
@@ -220,6 +238,53 @@ def _parse_policy_mix_spec(spec: str):
     names = [n for n, _ in weights]
     probs = [w / total for _, w in weights]
     return names, probs
+
+
+def _parse_policy_mix_normal_spec(spec, names, base_probs):
+    """
+    Parse optional per-policy normal params:
+      random:0.6:0.1,shortest_safe:0.3:0.08,longest_safe:0.1:0.05
+    Missing policies fall back to mean=base_prob, std=0.05.
+    """
+    params = {str(n): (float(p), 0.05) for n, p in zip(names, base_probs)}
+    if spec is None:
+        return params
+    raw = str(spec).strip()
+    if raw == "":
+        return params
+    tokens = [t.strip() for t in raw.split(",") if t.strip()]
+    for tok in tokens:
+        parts = [p.strip() for p in tok.split(":")]
+        if len(parts) != 3:
+            raise ValueError(
+                f"Invalid cb_policy_mix_normal_spec token '{tok}'. Expected name:mean:std."
+            )
+        name, mean_s, std_s = parts
+        if name not in params:
+            raise ValueError(f"Unknown policy '{name}' in cb_policy_mix_normal_spec.")
+        mean = float(mean_s)
+        std = float(std_s)
+        if std < 0.0:
+            raise ValueError("Normal std must be non-negative.")
+        params[name] = (mean, std)
+    return params
+
+
+def _sample_policy_probs(rng, names, base_probs, mode, normal_params):
+    if mode == "fixed":
+        return list(base_probs)
+
+    weights = []
+    for name in names:
+        mean, std = normal_params.get(name, (0.0, 0.05))
+        sample = float(rng.normal(loc=mean, scale=std))
+        weights.append(max(0.0, sample))
+
+    total = float(np.sum(weights))
+    if total <= 0.0:
+        # Fallback to deterministic base mix.
+        return list(base_probs)
+    return [w / total for w in weights]
 
 
 def _choose_action(

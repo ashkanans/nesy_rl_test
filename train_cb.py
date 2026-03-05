@@ -288,6 +288,8 @@ def build_dataset(args):
             seed=args.seed,
             target_shift=args.target_shift,
             policy_mix_spec=getattr(args, "cb_policy_mix_spec", "random:1.0"),
+            policy_mix_sampling=getattr(args, "cb_policy_mix_sampling", "fixed"),
+            policy_mix_normal_spec=getattr(args, "cb_policy_mix_normal_spec", None),
             longest_path_max_expansions=getattr(args, "cb_longest_path_max_expansions", 500000),
         )
     elif args.env == "nrm_nav":
@@ -920,6 +922,27 @@ def get_arg_parser(add_help=True):
             "ColourBomb dataset policy mix specification. "
             "Format: name:weight[,name:weight...]. "
             "Supported names: random, shortest_safe, longest_safe, shortest_any, longest_any."
+        ),
+    )
+    p.add_argument(
+        "--cb_policy_mix_sampling",
+        type=str,
+        choices=["fixed", "normal"],
+        default="fixed",
+        help=(
+            "How to sample episode-level policy source in ColourBomb dataset generation: "
+            "'fixed' uses constant mix probabilities, 'normal' samples per-policy weights "
+            "from Normal(mean,std) then normalizes."
+        ),
+    )
+    p.add_argument(
+        "--cb_policy_mix_normal_spec",
+        type=str,
+        default=None,
+        help=(
+            "Optional per-policy normal parameters for --cb_policy_mix_sampling normal. "
+            "Format: name:mean:std[,name:mean:std...]. "
+            "Example: random:0.7:0.1,shortest_safe:0.2:0.08,longest_safe:0.1:0.05"
         ),
     )
     p.add_argument(

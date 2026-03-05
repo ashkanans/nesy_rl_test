@@ -3,6 +3,7 @@ import copy
 import csv
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -57,6 +58,10 @@ def _null_metrics(env, spec, seed):
         "run_id": None,
         "timestamp_utc": None,
     }
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9._-]+", "_", str(text)).strip("_")
 
 
 def _to_jsonable(value):
@@ -182,6 +187,16 @@ def parse_baseline_args():
         action="store_true",
         help="Skip pre-run dataset overview analysis and plots.",
     )
+    parser.add_argument(
+        "--cb_policy_mix_specs",
+        type=str,
+        nargs="+",
+        default=None,
+        help=(
+            "Optional set of ColourBomb policy mix specs to sweep in one invocation. "
+            "When set, each mix runs under <base_run_dir>/mix_<slug>/."
+        ),
+    )
     return parser
 
 
@@ -291,31 +306,111 @@ def main():
     set_global_seed(args.seed)
 
     if args.base_run_dir is None:
-        args.base_run_dir, _, _ = ensure_run_dir(
-            args.env, run_dir=None, base_dir=args.base_runs_dir
-        )
+        base_root, _, _ = ensure_run_dir(args.env, run_dir=None, base_dir=args.base_runs_dir)
     else:
-        os.makedirs(args.base_run_dir, exist_ok=True)
-    _save_args_snapshot(args, os.path.join(args.base_run_dir, "experiment_args.json"))
-    if not args.skip_dataset_analysis:
-        _run_dataset_overview(args)
+        base_root = args.base_run_dir
+    os.makedirs(base_root, exist_ok=True)
 
-    results = {}
-    for name in args.baselines:
-        if name == "logic" and args.alphas:
-            for alpha in args.alphas:
-                key = f"{name}_alpha{alpha}"
-                print(f"=== Running baseline: {key} ===")
-                results[key] = run_baseline(name, args, alpha_override=alpha, suffix=f"alpha{alpha}")
+    mix_specs = args.cb_policy_mix_specs
+    if mix_specs is not None and args.env != "cb":
+        raise ValueError("--cb_policy_mix_specs is only supported when --env cb.")
+    if mix_specs is None:
+        mix_specs = [args.cb_policy_mix_spec]
+
+    all_mix_results = {}
+    csv_rows = []
+
+    for mix_idx, mix_spec in enumerate(mix_specs):
+        run_args = copy.deepcopy(args)
+        run_args.cb_policy_mix_spec = str(mix_spec)
+        if len(mix_specs) == 1 and args.cb_policy_mix_specs is None:
+            run_args.base_run_dir = base_root
+            mix_key = "default"
         else:
-            print(f"=== Running baseline: {name} ===")
-            results[name] = run_baseline(name, args)
+            mix_slug = _slug(mix_spec)
+            run_args.base_run_dir = os.path.join(base_root, f"mix_{mix_slug}")
+            mix_key = mix_spec
+        os.makedirs(run_args.base_run_dir, exist_ok=True)
 
-    json_path, csv_path = write_summary_artifacts(args.base_run_dir, results)
-    if getattr(args, "save_plots", False):
-        _save_summary_plots(args.base_run_dir, results)
-    print(f"Saved summary JSON to {json_path}")
-    print(f"Saved summary CSV to {csv_path}")
+        _save_args_snapshot(run_args, os.path.join(run_args.base_run_dir, "experiment_args.json"))
+        if not run_args.skip_dataset_analysis:
+            print(f"=== Dataset overview (pre-run) | mix={mix_spec} ===")
+            _run_dataset_overview(run_args)
+
+        results = {}
+        for name in run_args.baselines:
+            if name == "logic" and run_args.alphas:
+                for alpha in run_args.alphas:
+                    key = f"{name}_alpha{alpha}"
+                    print(f"=== Running baseline: {key} | mix={mix_spec} ===")
+                    results[key] = run_baseline(
+                        name, run_args, alpha_override=alpha, suffix=f"alpha{alpha}"
+                    )
+            else:
+                print(f"=== Running baseline: {name} | mix={mix_spec} ===")
+                results[name] = run_baseline(name, run_args)
+
+        json_path, csv_path = write_summary_artifacts(run_args.base_run_dir, results)
+        if getattr(run_args, "save_plots", False):
+            _save_summary_plots(run_args.base_run_dir, results)
+        print(f"Saved summary JSON to {json_path}")
+        print(f"Saved summary CSV to {csv_path}")
+
+        all_mix_results[mix_key] = {
+            "mix_spec": mix_spec,
+            "run_dir": run_args.base_run_dir,
+            "results": results,
+        }
+        for baseline_name, metrics in results.items():
+            row = {
+                "mix_spec": mix_spec,
+                "mix_run_dir": run_args.base_run_dir,
+                "baseline": baseline_name,
+            }
+            row.update(metrics)
+            csv_rows.append(row)
+
+    # Aggregate outputs when multiple mixes are requested.
+    if len(mix_specs) > 1 or args.cb_policy_mix_specs is not None:
+        multi_json = os.path.join(base_root, "baseline_metrics_by_mix.json")
+        with open(multi_json, "w") as f:
+            json.dump(all_mix_results, f, indent=2)
+
+        multi_csv = os.path.join(base_root, "baseline_metrics_by_mix.csv")
+        fields = [
+            "mix_spec",
+            "mix_run_dir",
+            "baseline",
+            "return_mean",
+            "return_std",
+            "violation_rate",
+            "satisfaction_rate",
+            "runtime_sec",
+            "env",
+            "spec",
+            "seed",
+            "num_episodes",
+            "satisfaction_soft_mean",
+            "violation_rate_episode",
+            "violation_rate_step",
+            "goal_rate",
+            "bomb_hit_rate",
+            "hazard_hit_rate",
+            "decoding_mode",
+            "beam_width",
+            "model_type",
+            "checkpoint_path",
+            "run_id",
+            "timestamp_utc",
+        ]
+        with open(multi_csv, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+            for row in csv_rows:
+                writer.writerow({k: row.get(k) for k in fields})
+
+        print(f"Saved multi-mix summary JSON to {multi_json}")
+        print(f"Saved multi-mix summary CSV to {multi_csv}")
 
 
 if __name__ == "__main__":
