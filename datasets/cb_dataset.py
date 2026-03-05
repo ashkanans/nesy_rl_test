@@ -261,7 +261,9 @@ def _parse_policy_mix_normal_spec(spec, names, base_probs):
             )
         name, mean_s, std_s = parts
         if name not in params:
-            raise ValueError(f"Unknown policy '{name}' in cb_policy_mix_normal_spec.")
+            # Allow superset normal-spec configs across multiple runs/mixes.
+            # Unknown names are ignored for this dataset instance.
+            continue
         mean = float(mean_s)
         std = float(std_s)
         if std < 0.0:
