@@ -1,4 +1,5 @@
 import argparse
+import csv
 import json
 import os
 import sys
@@ -45,6 +46,25 @@ if torch.cuda.is_available():
     device = "cuda:0"
 else:
     device = "cpu"
+
+
+def _to_jsonable(value):
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+    return str(value)
+
+
+def _save_args_snapshot(args, out_path: str) -> None:
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    payload = {k: _to_jsonable(v) for k, v in vars(args).items()}
+    with open(out_path, "w") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
 
 
 def build_product_dfa(dfas):
@@ -267,6 +287,8 @@ def build_dataset(args):
             stochastic=args.stochastic,
             seed=args.seed,
             target_shift=args.target_shift,
+            policy_mix_spec=getattr(args, "cb_policy_mix_spec", "random:1.0"),
+            longest_path_max_expansions=getattr(args, "cb_longest_path_max_expansions", 500000),
         )
     elif args.env == "nrm_nav":
         return NRMSafetySequenceDataset(
@@ -310,6 +332,8 @@ def train(args, return_state=False):
     args.run_dir = run_dir
     args.save_path = run_dir  # backward-compatible alias
     train_t0 = time.time()
+    os.makedirs(args.run_dir, exist_ok=True)
+    _save_args_snapshot(args, os.path.join(args.run_dir, "run_args.json"))
 
     if getattr(args, "no_end_state_hack", False):
         warnings.warn(
@@ -656,6 +680,22 @@ def analyze_dataset(args, dataset, adapter, raw_dfa):
         plt.savefig(os.path.join(out_dir, "state_hist.png"))
         plt.close()
 
+        ep_returns = getattr(dataset, "episode_rewards", None)
+        if isinstance(ep_returns, list) and ep_returns:
+            returns = [float(np.sum(r)) for r in ep_returns]
+            summary["episode_return_min"] = float(np.min(returns))
+            summary["episode_return_max"] = float(np.max(returns))
+            summary["episode_return_mean"] = float(np.mean(returns))
+
+            plt.figure(figsize=(6, 4))
+            plt.hist(returns, bins=20)
+            plt.xlabel("Episode return")
+            plt.ylabel("Count")
+            plt.title(f"{args.env} episode return distribution")
+            plt.tight_layout()
+            plt.savefig(os.path.join(out_dir, "episode_return_hist.png"))
+            plt.close()
+
         if args.env == "nrm_nav":
             # Cost histogram for nrm_nav (last column)
             costs = []
@@ -670,6 +710,28 @@ def analyze_dataset(args, dataset, adapter, raw_dfa):
             plt.tight_layout()
             plt.savefig(os.path.join(out_dir, "cost_hist.png"))
             plt.close()
+        elif args.env == "cb":
+            policy_labels = getattr(dataset, "episode_policy_labels", None)
+            if isinstance(policy_labels, list) and policy_labels:
+                uniq = sorted(set(policy_labels))
+                counts = {name: int(sum(1 for x in policy_labels if x == name)) for name in uniq}
+                summary["episode_policy_counts"] = counts
+                csv_path = os.path.join(out_dir, "policy_mix_counts.csv")
+                with open(csv_path, "w", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["policy_name", "count"])
+                    for name in uniq:
+                        writer.writerow([name, counts[name]])
+
+                plt.figure(figsize=(6, 4))
+                plt.bar(list(counts.keys()), list(counts.values()))
+                plt.xticks(rotation=20, ha="right")
+                plt.xlabel("Policy source")
+                plt.ylabel("Episode count")
+                plt.title("CB dataset composition by policy source")
+                plt.tight_layout()
+                plt.savefig(os.path.join(out_dir, "policy_mix_counts.png"))
+                plt.close()
 
     # Position-wise token stats on a subset of segments
     sample_limit = min(len(dataset), 500)
@@ -849,6 +911,22 @@ def get_arg_parser(add_help=True):
             "For FrozenLake dataset generation, fraction of scripted-policy episodes. "
             "0.0=random only, 1.0=scripted only."
         ),
+    )
+    p.add_argument(
+        "--cb_policy_mix_spec",
+        type=str,
+        default="random:1.0",
+        help=(
+            "ColourBomb dataset policy mix specification. "
+            "Format: name:weight[,name:weight...]. "
+            "Supported names: random, shortest_safe, longest_safe, shortest_any, longest_any."
+        ),
+    )
+    p.add_argument(
+        "--cb_longest_path_max_expansions",
+        type=int,
+        default=500000,
+        help="DFS expansion budget when computing ColourBomb longest-path scripted trajectories.",
     )
     p.add_argument(
         "--frozenlake_use_position_props",

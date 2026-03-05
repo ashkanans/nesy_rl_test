@@ -2,7 +2,12 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from envs.colour_bomb import CBConfig, ColourBombGridworldV1Env
+from envs.colour_bomb import (
+    CBConfig,
+    ColourBombGridworldV1Env,
+    compute_cb_longest_safe_path_actions,
+    compute_cb_shortest_safe_policy,
+)
 from logic.token_schema import (
     build_end_row,
     get_end_token_id,
@@ -40,10 +45,14 @@ class CBSequenceDataset(Dataset):
         stochastic=False,
         seed=0,
         target_shift="token",
+        policy_mix_spec="random:1.0",
+        longest_path_max_expansions=500000,
     ):
         self.sequence_length = sequence_length
         self.discount = discount
         self.target_shift = str(target_shift)
+        self.policy_mix_spec = str(policy_mix_spec)
+        self.longest_path_max_expansions = int(longest_path_max_expansions)
         if self.target_shift not in {"token", "transition"}:
             raise ValueError("target_shift must be 'token' or 'transition'.")
         self.token_schema = get_schema_for_env("cb")
@@ -59,23 +68,48 @@ class CBSequenceDataset(Dataset):
         )
 
         rng = np.random.RandomState(seed)
+        mix_names, mix_probs = _parse_policy_mix_spec(self.policy_mix_spec)
+        self.policy_mix_names = mix_names
+        self.policy_mix_probs = mix_probs
+        self.shortest_safe_policy = compute_cb_shortest_safe_policy(self.env, avoid_bombs=True)
+        self.shortest_any_policy = compute_cb_shortest_safe_policy(self.env, avoid_bombs=False)
+        self.longest_safe_path = compute_cb_longest_safe_path_actions(
+            self.env, avoid_bombs=True, max_expansions=self.longest_path_max_expansions
+        )
+        self.longest_any_path = compute_cb_longest_safe_path_actions(
+            self.env, avoid_bombs=False, max_expansions=self.longest_path_max_expansions
+        )
 
         episodes_tokens = []
         episode_rewards = []
+        episode_policy_labels = []
 
         for _ in range(num_episodes):
             s, _ = self.env.reset()
             states = []
             actions = []
             rewards = []
+            policy_name = str(rng.choice(self.policy_mix_names, p=self.policy_mix_probs))
+            path_step = 0
 
             for t in range(max_steps):
-                a = rng.randint(self.env.action_space.n)
+                a = _choose_action(
+                    env=self.env,
+                    rng=rng,
+                    state=int(s),
+                    policy_name=policy_name,
+                    path_step=path_step,
+                    shortest_safe_policy=self.shortest_safe_policy,
+                    shortest_any_policy=self.shortest_any_policy,
+                    longest_safe_path=self.longest_safe_path,
+                    longest_any_path=self.longest_any_path,
+                )
                 ns, r, done, _ = self.env.step(a)
                 states.append(s)
                 actions.append(a)
                 rewards.append(r)
                 s = ns
+                path_step += 1
                 if done:
                     break
 
@@ -107,6 +141,7 @@ class CBSequenceDataset(Dataset):
 
             episodes_tokens.append(tokens)
             episode_rewards.append(np.asarray(rewards, dtype=np.float32))
+            episode_policy_labels.append(policy_name)
 
         indices = []
         self.rows_per_seg = max(1, sequence_length // self.token_schema.width)
@@ -126,6 +161,7 @@ class CBSequenceDataset(Dataset):
 
         self.episodes_tokens = episodes_tokens
         self.episode_rewards = episode_rewards
+        self.episode_policy_labels = episode_policy_labels
         self.indices = indices
 
         self.observation_dim = 1
@@ -148,3 +184,67 @@ class CBSequenceDataset(Dataset):
             y = torch.from_numpy(flat[self.joined_dim :].astype(np.int64))
         mask = torch.ones_like(x, dtype=torch.float32)
         return x, y, mask
+
+
+def _parse_policy_mix_spec(spec: str):
+    """
+    Parse strings like:
+      random:0.8,shortest_safe:0.1,longest_safe:0.1
+    """
+    allowed = {
+        "random",
+        "shortest_safe",
+        "longest_safe",
+        "shortest_any",
+        "longest_any",
+    }
+    raw = str(spec or "").strip()
+    if not raw:
+        return ["random"], [1.0]
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    weights = []
+    for p in parts:
+        if ":" not in p:
+            raise ValueError(f"Invalid policy mix token '{p}'. Expected name:weight.")
+        name, w = p.split(":", 1)
+        name = name.strip()
+        if name not in allowed:
+            raise ValueError(f"Unsupported CB policy '{name}'. Allowed: {sorted(allowed)}")
+        val = float(w.strip())
+        if val < 0.0:
+            raise ValueError("Policy mix weights must be non-negative.")
+        weights.append((name, val))
+    total = sum(w for _, w in weights)
+    if total <= 0.0:
+        raise ValueError("Policy mix weights sum to zero.")
+    names = [n for n, _ in weights]
+    probs = [w / total for _, w in weights]
+    return names, probs
+
+
+def _choose_action(
+    env: ColourBombGridworldV1Env,
+    rng: np.random.RandomState,
+    state: int,
+    policy_name: str,
+    path_step: int,
+    shortest_safe_policy: dict[int, int],
+    shortest_any_policy: dict[int, int],
+    longest_safe_path: list[int],
+    longest_any_path: list[int],
+) -> int:
+    if policy_name == "random":
+        return int(rng.randint(env.action_space.n))
+    if policy_name == "shortest_safe":
+        return int(shortest_safe_policy.get(int(state), rng.randint(env.action_space.n)))
+    if policy_name == "shortest_any":
+        return int(shortest_any_policy.get(int(state), rng.randint(env.action_space.n)))
+    if policy_name == "longest_safe":
+        if path_step < len(longest_safe_path):
+            return int(longest_safe_path[path_step])
+        return int(shortest_safe_policy.get(int(state), rng.randint(env.action_space.n)))
+    if policy_name == "longest_any":
+        if path_step < len(longest_any_path):
+            return int(longest_any_path[path_step])
+        return int(shortest_any_policy.get(int(state), rng.randint(env.action_space.n)))
+    return int(rng.randint(env.action_space.n))

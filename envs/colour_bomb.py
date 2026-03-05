@@ -1,4 +1,5 @@
 import numpy as np
+from collections import deque
 
 try:
     import gymnasium as gym
@@ -186,6 +187,157 @@ class ColourBombGridworldV1Env(gym.Env):
             print(out)
 
         return out
+
+
+def _is_walkable_cell(env: ColourBombGridworldV1Env, pos: tuple[int, int], avoid_bombs: bool) -> bool:
+    r, c = pos
+    if not (0 <= r < env.n_rows and 0 <= c < env.n_cols):
+        return False
+    cell = env.grid[r][c]
+    if cell == "#":
+        return False
+    if avoid_bombs and cell == "B":
+        return False
+    return True
+
+
+def _neighbors_with_actions(env: ColourBombGridworldV1Env, pos: tuple[int, int], avoid_bombs: bool):
+    for action, (dr, dc) in env.ACTIONS.items():
+        nxt = (pos[0] + dr, pos[1] + dc)
+        if _is_walkable_cell(env, nxt, avoid_bombs=avoid_bombs):
+            yield action, nxt
+
+
+def compute_cb_shortest_safe_policy(
+    env: ColourBombGridworldV1Env, avoid_bombs: bool = True
+) -> dict[int, int]:
+    """
+    Return a deterministic state->action policy that follows shortest
+    walkable paths to any goal, optionally avoiding bomb cells.
+    """
+    goals = [g for g in env.goal_positions if _is_walkable_cell(env, g, avoid_bombs=avoid_bombs)]
+    if not goals:
+        return {}
+
+    dist: dict[tuple[int, int], int] = {}
+    q = deque()
+    for g in goals:
+        dist[g] = 0
+        q.append(g)
+
+    # Reverse BFS from goals to all reachable cells.
+    while q:
+        cur = q.popleft()
+        for _, prev in _neighbors_with_actions(env, cur, avoid_bombs=avoid_bombs):
+            if prev not in dist:
+                dist[prev] = dist[cur] + 1
+                q.append(prev)
+
+    policy: dict[int, int] = {}
+    for r in range(env.n_rows):
+        for c in range(env.n_cols):
+            pos = (r, c)
+            if pos not in dist or dist[pos] == 0:
+                continue
+            best = None
+            best_d = 10**9
+            for action, nxt in _neighbors_with_actions(env, pos, avoid_bombs=avoid_bombs):
+                d = dist.get(nxt)
+                if d is None:
+                    continue
+                if d < best_d:
+                    best_d = d
+                    best = action
+            if best is not None:
+                policy[env._pos_to_state(pos)] = int(best)
+    return policy
+
+
+def compute_cb_shortest_safe_path_actions(
+    env: ColourBombGridworldV1Env, avoid_bombs: bool = True
+) -> list[int]:
+    """
+    Compute one shortest safe action sequence from start to any goal.
+    Returns [] if no safe path exists.
+    """
+    start = env.start_pos
+    goals = set(g for g in env.goal_positions if _is_walkable_cell(env, g, avoid_bombs=avoid_bombs))
+    if start in goals:
+        return []
+    if not goals:
+        return []
+
+    q = deque([start])
+    parent: dict[tuple[int, int], tuple[tuple[int, int], int]] = {}
+    seen = {start}
+    found_goal = None
+
+    while q:
+        cur = q.popleft()
+        if cur in goals:
+            found_goal = cur
+            break
+        for action, nxt in _neighbors_with_actions(env, cur, avoid_bombs=avoid_bombs):
+            if nxt in seen:
+                continue
+            seen.add(nxt)
+            parent[nxt] = (cur, int(action))
+            q.append(nxt)
+
+    if found_goal is None:
+        return []
+
+    actions: list[int] = []
+    cur = found_goal
+    while cur != start:
+        prev, act = parent[cur]
+        actions.append(act)
+        cur = prev
+    actions.reverse()
+    return actions
+
+
+def compute_cb_longest_safe_path_actions(
+    env: ColourBombGridworldV1Env,
+    avoid_bombs: bool = True,
+    max_expansions: int = 500000,
+) -> list[int]:
+    """
+    Attempt to find a long simple safe path from start to any goal.
+    Uses DFS with an expansion budget and returns the longest path found.
+    """
+    start = env.start_pos
+    goals = set(g for g in env.goal_positions if _is_walkable_cell(env, g, avoid_bombs=avoid_bombs))
+    if not goals:
+        return []
+
+    best_actions: list[int] = []
+    expansions = 0
+    visited = {start}
+    path_actions: list[int] = []
+
+    def dfs(cur: tuple[int, int]) -> None:
+        nonlocal expansions, best_actions
+        if expansions >= int(max_expansions):
+            return
+        expansions += 1
+
+        if cur in goals and len(path_actions) > len(best_actions):
+            best_actions = list(path_actions)
+
+        for action, nxt in _neighbors_with_actions(env, cur, avoid_bombs=avoid_bombs):
+            if nxt in visited:
+                continue
+            visited.add(nxt)
+            path_actions.append(int(action))
+            dfs(nxt)
+            path_actions.pop()
+            visited.remove(nxt)
+
+    dfs(start)
+    if best_actions:
+        return best_actions
+    return compute_cb_shortest_safe_path_actions(env, avoid_bombs=avoid_bombs)
 
 
 def generate_random_trajectories(env, num_episodes=1000, max_steps=None):

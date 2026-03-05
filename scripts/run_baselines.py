@@ -23,7 +23,14 @@ from planning.eval_runtime import (
     spec_label_from_args,
     summarize_dfa_bundle,
 )
-from train_cb import get_arg_parser, resolve_formulas, train
+from train_cb import (
+    analyze_dataset,
+    build_adapter_and_dfa,
+    build_dataset,
+    get_arg_parser,
+    resolve_formulas,
+    train,
+)
 
 
 def _null_metrics(env, spec, seed):
@@ -50,6 +57,33 @@ def _null_metrics(env, spec, seed):
         "run_id": None,
         "timestamp_utc": None,
     }
+
+
+def _to_jsonable(value):
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+    return str(value)
+
+
+def _save_args_snapshot(args, out_path: str):
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    payload = {k: _to_jsonable(v) for k, v in vars(args).items()}
+    with open(out_path, "w") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+
+
+def _run_dataset_overview(args):
+    print("=== Dataset overview (pre-run) ===")
+    inspect_args = copy.deepcopy(args)
+    inspect_args.save_path = args.base_run_dir
+    inspect_args.run_dir = args.base_run_dir
+    dataset = build_dataset(inspect_args)
+    adapter, _, raw_dfa = build_adapter_and_dfa(inspect_args, dataset)
+    analyze_dataset(inspect_args, dataset, adapter, raw_dfa)
 
 
 def run_baseline(name, args, alpha_override=None, suffix=None):
@@ -142,6 +176,11 @@ def parse_baseline_args():
         nargs="+",
         default=[0.4],
         help="Logic loss weights to sweep for the logic baseline",
+    )
+    parser.add_argument(
+        "--skip_dataset_analysis",
+        action="store_true",
+        help="Skip pre-run dataset overview analysis and plots.",
     )
     return parser
 
@@ -257,6 +296,9 @@ def main():
         )
     else:
         os.makedirs(args.base_run_dir, exist_ok=True)
+    _save_args_snapshot(args, os.path.join(args.base_run_dir, "experiment_args.json"))
+    if not args.skip_dataset_analysis:
+        _run_dataset_overview(args)
 
     results = {}
     for name in args.baselines:
