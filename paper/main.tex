@@ -1,0 +1,156 @@
+% This is samplepaper.tex, a sample chapter demonstrating the
+% LLNCS macro package for Springer Computer Science proceedings;
+% Version 2.21 of 2022/01/12
+%
+\documentclass[runningheads]{llncs}
+%
+\usepackage[T1]{fontenc}
+% T1 fonts will be used to generate the final print and online PDFs,
+% so please use T1 fonts in your manuscript whenever possible.
+% Other font encondings may result in incorrect characters.
+%
+\usepackage{graphicx}
+% Used for displaying a sample figure. If possible, figure files should
+% be included in EPS format.
+%
+% If you use the hyperref package, please uncomment the following two lines
+% to display URLs in blue roman font according to Springer's eBook style:
+%\usepackage{color}
+%\renewcommand\UrlFont{\color{blue}\rmfamily}
+%\urlstyle{rm}
+%
+
+% TO BE DELETED BEFORE SUBMISSION
+\usepackage{xcolor}
+
+
+\input{preamble}
+
+\begin{document}
+%
+\title{Neurosymbolic Injection of LTLf Constraints in Deep Reinforcement Learning Policies}
+%
+\titlerunning{Neurosymbolic Injection of LTLf Constraints in Deep RL Policies}
+% If the paper title is too long for the running head, you can set
+% an abbreviated paper title here
+%
+\author{Ashkan Ansarifard\orcidID{0009-0005-9247-1786} \and
+Matteo Mancanelli\orcidID{0009-0004-9547-7115} \and
+Elena Umili\orcidID{0000-0002-5639-6038} \and
+Fabio Patrizi\orcidID{0000-0002-9116-251X} }
+%\author{Ashkan Ansarifard\inst{1}\orcidID{0009-0005-9247-1786} \and
+%Matteo Mancanelli\inst{1}\orcidID{0009-0004-9547-7115} \and
+%Fabio Patrizi\inst{1}\orcidID{0000-0002-9116-251X} \and
+%Elena Umili\inst{1}\orcidID{0000-0002-5639-6038}}
+%
+\authorrunning{A. Ansarifard et al.}
+% First names are abbreviated in the running head.
+% If there are more than two authors, 'et al.' is used.
+%
+%\institute{Princeton University, Princeton NJ 08544, USA \and
+%Springer Heidelberg, Tiergartenstr. 17, 69121 Heidelberg, Germany
+%\email{lncs@springer.com}\\
+%\url{http://www.springer.com/gp/computer-science/lncs} \and
+%ABC Institute, Rupert-Karls-University Heidelberg, Heidelberg, Germany\\
+%\email{\{abc,lncs\}@uni-heidelberg.de}}
+\institute{University of Rome La Sapienza, Rome, Italy
+\email{ansarifard.1970082@studenti.uniroma1.it}\\
+\email{\{mancanelli,umili,patrizi\}@diag.uniroma1.it}}
+%
+\maketitle              % typeset the header of the contribution
+%
+\begin{abstract}
+We study offline reinforcement learning (RL) under temporally extended task constraints expressed in Linear Temporal Logic over finite traces (\ltlf). Recently, transformer-based approaches such as Trajectory Transformers and Decision Transformers have been adopted to address RL as a sequence modeling problem.
+%, enabling effective policy learning from fixed datasets. 
+However, these methods optimize purely for reward and do not account for high-level temporal requirements.
+%
+Here, we introduce a neurosymbolic framework that injects \ltlf background knowledge into such transformer-based RL policies. 
+Our approach compiles \ltlf formulas into deterministic finite automata (DFAs) and integrates them into the learning process through a differentiable representation and a logic-based loss function.
+In particular, we derive differentiable satisfaction signals from DFA progression and use them as a regularization term during training. We also perform automaton-aware constrained decoding at test time by tracking DFA states during trajectory generation. The resulting method is architecture-agnostic across different models.
+%
+We evaluate the proposed framework on a navigation environments with specification suites covering invariant safety, reachability, and a combination thereof. Experimental results show that incorporating background knowledge not only improves constraint satisfaction, but also maintains competitive return compared to vanilla baselines.
+
+\begin{comment}
+Our framework injects symbolic structure into transformer-based policies through automata-derived satisfaction signals and automaton-aware decoding/planning. We support both Trajectory Transformer (TT) and Decision Transformer (DT) families under a unified logic interface: exact finite-trace satisfaction for evaluation, differentiable soft satisfaction for training-time regularization, and constrained test-time decoding/action selection using DFA state tracking. We evaluate on several navigation environments with increasing complexity, with specification suites covering invariants, reachability, and temporally extended safety constraints (e.g., reach-while-safe and response-like formulas). 
+The experimental section is organized around (i) within-family comparisons (TT and DT baselines versus logic-enhanced variants), (ii) cross-family comparisons (TT vs.\ DT vs.\ logic-enhanced methods), (iii) trade-off and sensitivity analyses, and (iv) qualitative and automata diagnostics. We report standardized metrics for return, violation rate, and LTLf satisfaction, together with runtime overhead and benchmark-specific safety indicators, and provide plotting/aggregation artifacts for reproducible analysis. 
+\end{comment}
+%
+\keywords{Safe Reinforcement Learning, Neurosymbolic Knowledge Injection, Linear Temporal Logic}
+\end{abstract}
+%
+%
+%
+
+\noindent
+
+
+\input{1_introduction}
+\input{2_background}
+\input{3_related_works}
+\input{4_method}
+\input{5_exp_setup}
+\input{6_prelim_exp}
+\input{7_conclusion}
+
+
+\begin{credits}
+
+\subsubsection{\ackname} This work has been supported by the the PNRR MUR project FAIR (No. PE0000013), and the Italian National Ph.D. on Artificial Intelligence at Sapienza University of Rome.
+
+\begin{comment}
+\subsubsection{\discintname}
+It is now necessary to declare any competing interests or to specifically
+state that the authors have no competing interests. Please place the
+statement with a bold run-in heading in small font size beneath the
+(optional) acknowledgments\footnote{If EquinOCS, our proceedings submission
+system, is used, then the disclaimer can be provided directly in the system.},
+for example: The authors have no competing interests to declare that are
+relevant to the content of this article. Or: Author A has received research
+grants from Company W. Author B has received a speaker honorarium from
+Company X and owns stock in Company Y. Author C is a member of committee Z.
+\end{comment}
+
+\subsubsection{\discintname}
+The authors have no competing interests to declare that are
+relevant to the content of this article.
+
+\end{credits}
+
+
+%
+% ---- Bibliography ----
+%
+% BibTeX users should specify bibliography style 'splncs04'.
+% References will then be sorted and formatted in the correct style.
+%
+% \bibliographystyle{splncs04}
+% \bibliography{mybibliography}
+%
+
+\bibliographystyle{splncs04}
+\bibliography{bibliography}
+
+\begin{comment}
+\begin{thebibliography}{8}
+\bibitem{ref_article1}
+Author, F.: Article title. Journal \textbf{2}(5), 99--110 (2016)
+
+\bibitem{ref_lncs1}
+Author, F., Author, S.: Title of a proceedings paper. In: Editor,
+F., Editor, S. (eds.) CONFERENCE 2016, LNCS, vol. 9999, pp. 1--13.
+Springer, Heidelberg (2016). \doi{10.10007/1234567890}
+
+\bibitem{ref_book1}
+Author, F., Author, S., Author, T.: Book title. 2nd edn. Publisher,
+Location (1999)
+
+\bibitem{ref_proc1}
+Author, A.-B.: Contribution title. In: 9th International Proceedings
+on Proceedings, pp. 1--2. Publisher, Location (2010)
+
+\bibitem{ref_url1}
+LNCS Homepage, \url{http://www.springer.com/lncs}, last accessed 2023/10/25
+\end{thebibliography}
+\end{comment}
+
+\end{document}

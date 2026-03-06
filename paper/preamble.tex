@@ -1,0 +1,185 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Packages
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\usepackage{amsmath}
+%\usepackage{amsthm}                % comment this line when using LNCS format
+\usepackage{amssymb}
+
+\usepackage{xspace}
+\usepackage{comment}
+\usepackage{booktabs}
+\usepackage{multirow}
+
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Font modes & definitions
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\newcommand{\Math}[1]{\ensuremath{#1}}
+
+\newcommand{\modesf}[1]{{\Math{\mathsf{#1}}}}
+\newcommand{\modecal}[1]{{\Math{\mathcal{#1}}}}
+\newcommand{\modeit}[1]{{\Math{\mathit{#1}}}}
+\newcommand{\textmath}[1]{\mbox{\textit{#1}}}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Calligraphic letters
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\newcommand{\A}{\modecal{A}} \newcommand{\B}{\modecal{B}}
+\newcommand{\C}{\modecal{C}} \newcommand{\D}{\modecal{D}}
+\newcommand{\E}{\modecal{E}} \newcommand{\F}{\modecal{F}}
+\newcommand{\G}{\modecal{G}}    
+\newcommand{\I}{\modecal{I}} \newcommand{\J}{\modecal{J}}
+\newcommand{\K}{\modecal{K}}    
+\newcommand{\M}{\modecal{M}} \newcommand{\N}{\modecal{N}}
+\newcommand{\Q}{\modecal{Q}} \newcommand{\R}{\modecal{R}}
+\newcommand{\T}{\modecal{T}}
+\newcommand{\U}{\modecal{U}} \newcommand{\V}{\modecal{V}}
+\newcommand{\W}{\modecal{W}} \newcommand{\X}{\modecal{X}}
+\newcommand{\Y}{\modecal{Y}} \newcommand{\Z}{\modecal{Z}}
+
+\newcommand{\calH}{\modecal{H}} \newcommand{\calL}{\modecal{L}}
+\newcommand{\calO}{\modecal{O}} \newcommand{\calP}{\modecal{P}}
+\newcommand{\calS}{\modecal{S}}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Proper names
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\newcommand{\propername}[1]{\mbox{\small \textsf{#1}}\xspace}
+
+\newcommand{\GameGolog}{\propername{GameGolog}}
+\newcommand{\Golog}{\propername{Golog}}
+\newcommand{\GologSpeak}{\propername{GologSpeak}}
+\newcommand{\DGolog}{\propername{DGolog}}
+\newcommand{\sGolog}{\propername{sGolog}}
+\newcommand{\ConGolog}{\propername{ConGolog}}
+\newcommand{\IndiGolog}{\propername{IndiGolog}}
+\newcommand{\LeGolog}{\propername{LeGolog}}
+\newcommand{\DTGolog}{\propername{DTGolog}}
+\newcommand{\Prolog}{\propername{Prolog}}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Situation Calculus
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\newcommand{\mif}{\mbox{\bf if}}
+\newcommand{\mwhile}{\mbox{\bf while}}
+\newcommand{\mreturn}{\mbox{\bf return}}
+\newcommand{\mthen}{\mbox{\bf then}}
+\newcommand{\melse}{\mbox{\bf else}}
+\newcommand{\mdo}{\mbox{\bf do}}
+\newcommand{\mnoOp}{\mbox{\bf $noOp$}}
+\newcommand{\mproc}{\mbox{\bf proc}}
+\newcommand{\mend}{\mbox{\bf end}}
+\newcommand{\mendproc}{\mbox{\bf endProc}}
+\newcommand{\mendif}{\mbox{\bf endIf}}
+\newcommand{\mendwhile}{\mbox{\bf endWhile}}
+\newcommand{\mendfor}{\mbox{\bf endFor}}
+\newcommand{\mfor}{\mbox{\bf for}}
+\newcommand{\ndet}{\mbox{$|$}}
+\newcommand{\conc}{\mbox{$\parallel$}}
+\newcommand{\pconc}{\mbox{$\prparallel$}}
+
+\newcommand{\Trans}{\textmath{Trans}}
+\newcommand{\Final}{\textmath{Final}}
+\newcommand{\Poss}{\textmath{Poss}}
+\newcommand{\SitDet}{\textmath{SituationDetermined}}
+\newcommand{\nil}{\mathit{nil}}
+\newcommand{\CGaxioms}{\mathcal{C}}
+
+\newcommand{\Know}{\mbox{\bf Know}}
+\newcommand{\KWhether}{\mbox{\bf KWhether}}
+\newcommand{\Kref}{\mbox{\bf KRef}}
+\newcommand{\nows}{{\hbox{\small\sf now}}}
+\newcommand{\now}{{\mbox{\sf now}}}
+
+\def\prparallel{\mathrel{\rangle\!\rangle}}
+\def\supparallel{\mathord{|\!|}}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Logics symbols
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\newcommand{\true}{\mathtt{true}}
+\newcommand{\false}{\mathtt{false}}
+\newcommand{\True}{\mathtt{True}}
+\newcommand{\False}{\mathtt{False}}
+\newcommand{\limp}{\supset}
+
+% LTL
+\newcommand{\ltl}{\ensuremath{\textsc{LTL}}\xspace}
+\newcommand{\ltlf}{\ensuremath{\ltl_f}\xspace}
+\newcommand{\mnext}{\bigcirc}
+\newcommand{\malways}{\square}
+\newcommand{\meventually}{\lozenge}
+\newcommand{\muntil}{\mathop{\U}}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Agent Abstraction
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\newcommand{\anyonehl}{\textsc{any1hl}}
+\newcommand{\anyseqhl}{\textsc{anyseqhl}}
+%\newcommand{\anyonehl}{\textsc{any1hlref}}
+%\newcommand{\anyseqhl}{\textsc{anyseqhlref}}
+\newcommand{\anyoneexohl}{\textsc{anyoneexohl}}
+
+\newcommand{\anyonehlm}{\textsc{oneMonit}}
+\newcommand{\anyseqhlm}{\textsc{monit}}
+
+\newcommand{\anyone}{\textsc{anyOne}}
+\newcommand{\anyseq}{\textsc{any}}
+
+\newcommand{\AllDo}{\mbox{\it NecTerminates}}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Comments  
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\newcommand{\notem}[1]{\marginpar{\textbf{#1}}}
+\newcommand{\ncheck}{\notem{CHECK!}}
+\newcommand{\GDG}{\notem{GDG}}
+\newcommand{\YL}{\notem{YL}}
+\newcommand{\BB}{\notem{BB}}
+\newcommand{\MM}{\notem{MM}}
+\newcommand{\GP}{\notem{GP}}
+\newcommand{\FP}{\notem{FP}}
+\newcommand{\EU}{\notem{EU}}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\newcommand{\underoverset}[3]{\underset{#1}{\overset{#2}{#3}}}
+
+\newcommand{\myi}{\emph{(i)}\xspace}
+\newcommand{\myii}{\emph{(ii)}\xspace}
+\newcommand{\myiii}{\emph{(iii)}\xspace}
+\newcommand{\myiv}{\emph{(iv)}\xspace}
+\newcommand{\myv}{\emph{(v)}\xspace}
+\newcommand{\myvi}{\emph{(vi)}\xspace}
+
+
+\newcommand{\powerset}{\mathbb{P}}
+\newcommand{\NatN}{\Math{\mathbb{N}_0}}
+\newcommand{\Nat}{\Math{\mathbb{N}}}
+\newcommand{\mgu}{\modesf{mgu}}
+\newcommand{\complexsub}{\modesf{cplex}}
+
+\newcommand{\goto}[1]{\stackrel{#1}{\longrightarrow}}
+\newcommand{\gotoii}[2]{\stackrel{#1/#2}{\longrightarrow}}
+\newcommand{\isdef}{\hbox{$\stackrel{\mbox{\tiny def}}{=}$}}
+
+
+\newcommand{\seqset}[1]{\mathbf{set}(#1)}
+\newcommand{\progset}[1]{\mathbf{setp}(#1)}
+\newcommand{\progsetp}[1]{\mathbf{setp^+}(#1)}
+\newcommand{\atomic}[1]{\mathbf{atomic}(#1)}
+
+\newcommand{\DFA}{{\sc dfa}\xspace}
+
+\DeclareMathOperator*{\argmax}{argmax}
+\DeclareMathOperator*{\argmin}{argmin}

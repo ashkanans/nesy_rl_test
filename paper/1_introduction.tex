@@ -1,0 +1,52 @@
+\section{Introduction}
+\begin{comment}
+Safe decision making often requires constraints that are temporally extended rather than purely local \cite{prob_shielding_AAAI25}. Examples include \emph{eventually reach the goal while always avoiding hazards}, \emph{leave unsafe neighborhoods after entering them}, and sequencing requirements that depend on past and future events. In offline reinforcement learning (RL), these constraints must be enforced without online trial-and-error, making sequence-model-based policies \cite{trajectory_transformers, decision_transformers} attractive but also exposing a gap between probabilistic generation and formal task/safety specifications.
+
+This paper studies neurosymbolic constraint injection \cite{UmiliPMAI24} for offline transformer policies using Linear Temporal Logic over finite traces (LTLf) \cite{LTLf}. We compile LTLf specifications into deterministic finite automata (DFAs), then use the resulting automata in two roles: (i) differentiable soft satisfaction for training-time regularization, and (ii) automaton-aware constrained decoding at test time. Our implementation supports several transformer-based offline RL, such as Trajectory Transformer (TT) \cite{trajectory_transformers} and Decision Transformer (DT) \cite{decision_transformers}, under a shared logical interface.
+
+We evaluate our approach on several navigation environments for temporally extended tasks, including: FrozenLake, ColourBomb \cite{prob_shielding_AAAI25}, and minecraft-like \cite{NRM_ecai24} environments, with temporal constraints spanning invariant safety, reachability, and combined reach-while-safe objectives. The results section is organized to expose method behavior systematically: TT decoding and regularization effects, DT test-time and training-time logic integration, cross-benchmark trade-offs, and runtime overheads. We also include automata diagnostics and qualitative trajectory comparisons to make the symbolic mechanisms auditable.
+
+\paragraph{Contributions.}
+In summary, this paper proposes the following contributions.
+\begin{itemize}
+\item A unified offline sequence-RL framework for injecting LTLf constraints into Transformers-based policies via neurosymbolic modules.
+\item A canonical finite-trace evaluation stack with consistent end-of-trace semantics across dataset serialization, token/symbol mapping, and logic evaluation. \textcolor{blue}{????}
+\item Automaton-aware constrained decoding/planning and standardized evaluation protocols for return, safety violation, and hard/soft temporal-logic satisfaction.
+\item An evaluation of the proposed approach in temporally-constrained navigation in different base environments (Colour-bomb, Frozen Lake, Minecraft) across several temporal specifications presenting different challenges.
+\end{itemize}
+\end{comment}
+
+Safety is a central concern in reinforcement learning (RL), particularly when agents are deployed in real-world or safety-critical settings such as robotics, autonomous navigation, and decision-support systems. In these domains, undesirable behaviors may incur irreversible damage, financial loss, or human harm. Ensuring that learned policies respect some user-defined constraints is therefore crucial for increasing the system correctness and reliability. This challenge becomes even more pronounced in offline RL, where policies are learned exclusively from pre-collected data and cannot rely on online interaction to detect and correct unsafe behavior.
+
+Safe decision making often requires constraints that are \emph{temporally extended}, rather than purely local or instantaneous \cite{prob_shielding_AAAI25}. Many safety and task requirements cannot be verified from a single state-action pair, but only over entire trajectories. For instance, consider the specification: \emph{"eventually reach the goal while always avoiding hazards".}
+This requirement combines two distinct temporal modalities: (i) a \emph{liveness} condition (the goal must be reached at some point before the episode ends), and (ii) a \emph{safety} condition (no hazardous state may be visited at any preceding time step). A policy that briefly steps on a hazard—even if it later reaches the goal—violates the specification. A policy that remains safe but never reaches the goal also fails. Satisfaction therefore depends on the \emph{entire trace}, not on local reward maximization alone.
+\begin{comment}
+Other examples include \emph{leave unsafe neighborhoods after entering them} (a response property linking future behavior to past events), and sequencing constraints such as \emph{collect the key before opening the door}, where correctness depends on ordered event occurrence.
+\end{comment}
+
+In \emph{offline reinforcement learning (RL)}, enforcing such constraints is particularly challenging. Since no online interaction is allowed, constraint violations cannot be corrected via trial-and-error exploration. Sequence-model-based policies-such as Trajectory Transformers (TTs) \cite{trajectory_transformers} and Decision Transformers (DTs) \cite{decision_transformers}-are appealing in this setting because they generate trajectories autoregressively and naturally model long-range dependencies. However, they operate as probabilistic sequence generators, while task and safety requirements are typically expressed as formal logical specifications. This creates a gap between generative modeling and symbolic correctness guarantees.
+
+\textcolor{blue}{TODO: Put a super-brief summary of related works }
+
+In this paper, we study \emph{symbolic constraint injection} \cite{UmiliPMAI24,mezini2025neuro} for offline transformer policies using Linear Temporal Logic over finite traces (\ltlf) \cite{LTLf} as specification language. \ltlf provides a natural language for specifying safety, reachability, and sequencing requirements over episodic tasks. We compile \ltlf formulas into deterministic finite automata (DFAs) and integrate the resulting automata into the policy pipeline in two complementary ways:
+\begin{enumerate}
+    \item \textbf{Training-time regularization} via differentiable soft-satisfaction signals derived from automaton progression.
+    \item \textbf{Test-time automaton-aware constrained decoding}, where generation is restricted to action sequences consistent with the logical specification.
+\end{enumerate}
+
+\noindent
+Our implementation supports multiple transformer-based offline RL architectures, including TTs and DTs, through a shared logical interface that abstracts away architectural differences.
+
+We evaluate the proposed approach on temporally extended navigation tasks in several environments: FrozenLake \cite{liu2024tractable}, ColourBomb \cite{prob_shielding_AAAI25}, and Minecraft-like domains \cite{NRM_ecai24}. The considered specifications span invariant safety, reachability, and combined reach-while-safe objectives. The results section is structured to systematically expose the behavior of the method: the effects of constrained decoding and regularization in TT, training-time versus test-time integration in DT, cross-benchmark trade-offs between return and logical satisfaction, and runtime overhead. We further include automaton-level diagnostics and qualitative trajectory analyses to make the symbolic mechanisms transparent and auditable.
+
+\paragraph{Contributions.}
+In summary, this paper makes the following contributions:
+\begin{itemize}
+    \item A unified neurosymbolic offline sequence-RL framework for injecting \ltlf constraints into transformer-based policies through automata-based modules that are architecture-agnostic.
+    
+    \item A canonical finite-trace evaluation stack ensuring consistent end-of-episode semantics across (i) dataset serialization, (ii) token-to-symbol mappings, and (iii) logical evaluation, thereby preventing semantic mismatches between model training and temporal-logic assessment.
+    
+    \item Automaton-aware constrained decoding and training-time regularization, together with standardized evaluation protocols measuring return, safety violations, and both hard and soft temporal-logic satisfaction.
+    
+    \item A systematic empirical evaluation across multiple navigation benchmarks (ColourBomb, FrozenLake, and Minecraft-like environments) and diverse temporal specifications, highlighting trade-offs between performance, constraint satisfaction, and computational overhead.
+\end{itemize}

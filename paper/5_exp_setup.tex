@@ -1,0 +1,69 @@
+\section{Experimental Setup}
+
+\subsection{Benchmarks}
+\paragraph{FrozenLake.}
+We use FrozenLake as a controlled finite-state benchmark with hazard tiles (holes) and a goal tile. Configurations include deterministic and stochastic dynamics (via the slippery setting), multiple map sizes, and specification presets such as \texttt{avoid\_holes} and \texttt{reach\_goal\_while\_avoid\_holes}.
+
+\paragraph{ColourBomb.}
+ColourBomb is a custom interpretable safety environment with bomb cells (hazards) and goal regions. We use multiple layouts (including bottleneck hazard configurations) to create reward-safety conflict and evaluate invariant, reach-while-safe, and memory-like/response-style specifications.
+
+\paragraph{NRM Navigation.}
+NRM navigation provides a safety-centric navigation benchmark with explicit unsafe cells and goal-directed tasks. We evaluate invariant and reach-while-safe presets, and include response/bounded variants when available in the specification suite.
+
+\subsection{Specification Presets}
+We use environment-specific named specification presets to ensure consistency and reproducibility. Example presets are shown in Table~\ref{tab:spec_presets}. The evaluation suite includes invariants, reachability, reach-while-safe, and response-like formulas (environment dependent). DFA summaries and graph exports are generated for all compiled presets.
+
+\begin{table}[t]
+\caption{Representative specification presets used in the benchmark suite.}
+\label{tab:spec_presets}
+\centering
+\small
+\begin{tabular}{llll}
+\toprule
+Environment & Preset name & Formula (schematic) & Category \\
+\midrule
+FrozenLake & \texttt{avoid\_holes} & $G(\neg \texttt{hole})$ & Invariant safety \\
+FrozenLake & \texttt{reach\_goal} & $F(\texttt{goal})$ & Reachability \\
+FrozenLake & \texttt{reach\_goal\_while\_avoid\_holes} & $G(\neg \texttt{hole}) \wedge F(\texttt{goal})$ & Reach-while-safe \\
+ColourBomb & \texttt{avoid\_bomb} & $G(\neg \texttt{bomb})$ & Invariant safety \\
+ColourBomb & \texttt{reach\_goal\_while\_avoid\_bomb} & $G(\neg \texttt{bomb}) \wedge F(\texttt{goal})$ & Reach-while-safe \\
+ColourBomb & \texttt{response\_bomb\_escape} & $G(\texttt{near\_bomb}\rightarrow F(\neg \texttt{near\_bomb}))$ & Response-like \\
+NRM nav & \texttt{avoid\_unsafe} & $G(\neg \texttt{unsafe})$ & Invariant safety \\
+NRM nav & \texttt{reach\_goal\_while\_avoid\_unsafe} & $G(\neg \texttt{unsafe}) \wedge F(\texttt{goal})$ & Reach-while-safe \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Methods Compared}
+\paragraph{TT family.}
+\begin{itemize}
+\item TT vanilla (\texttt{alpha=0.0})
+\item TT logic-regularized / LTF-style (\texttt{alpha>0}; swept)
+\item TT DFA composition modes: \texttt{single}, \texttt{product}, \texttt{multi}
+\item TT decoding modes: \texttt{greedy}, \texttt{beam}, \texttt{constrained\_beam} (with hard pruning and/or satisfaction reranking)
+\end{itemize}
+
+\paragraph{DT family.}
+\begin{itemize}
+\item DT vanilla (greedy inference)
+\item DT-LTF-1 (training-time logic regularization)
+\item DT-LTF-2 (constrained test-time action selection)
+\item DT-LTF-3 (offline kNN suffix continuation planner)
+\item Random policy baseline (reference in DT evaluations)
+\end{itemize}
+
+\subsection{Metrics}
+We report:
+\begin{itemize}
+\item \textbf{Return} (\texttt{return\_mean}): mean episodic reward.
+\item \textbf{Violation rate} (\texttt{violation\_rate}): reported in standardized form, with episode-level and step-level variants where available.
+\item \textbf{Hard LTLf satisfaction rate} (\texttt{satisfaction\_rate}): fraction of episodes accepted by the compiled DFA under canonical finite-trace semantics.
+\item \textbf{Soft satisfaction score} (\texttt{satisfaction\_soft\_mean}): mean acceptance probability from the soft DFA evaluator.
+\item \textbf{Environment-specific indicators}: e.g., \texttt{goal\_rate}, \texttt{hazard\_hit\_rate}, \texttt{bomb\_hit\_rate}.
+\item \textbf{Runtime} (\texttt{runtime\_sec}) for training/evaluation components and planning modes.
+\end{itemize}
+All primary results are computed on executed rollouts; decoded prefixes are used for action selection only.
+
+\subsection{Evaluation Protocol}
+We use fixed seed lists within each comparison block and keep environment configuration, checkpoint, and evaluation budget identical across methods. Suite evaluation aggregates per-spec metrics into machine-readable tables and plots. Sweep experiments report full summaries, Pareto points, and heatmaps for parameter sensitivity.
+

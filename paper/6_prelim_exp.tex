@@ -1,0 +1,185 @@
+\section{Preliminary Experiments}
+This section is organized by benchmark family, method family, and cross-benchmark comparisons. We present tables and figures for all completed experiment groups and reserve interpretation for the discussion section.
+
+\subsection{FrozenLake}
+\paragraph{TT decoding and logic regularization.}
+We report TT decoding comparisons on invariant safety (greedy, beam, constrained beam with reranking/pruning) and TT logic-weight sweeps on reach-while-safe specifications. We additionally report DFA composition ablations (\texttt{single}/\texttt{product}/\texttt{multi}).
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.95\linewidth}{
+\textbf{Replace with:} \texttt{paper/figures/frozenlake/tt\_decoding\_bars.png} and \texttt{paper/figures/frozenlake/tt\_decoding\_runtime.png}
+}}
+\caption{FrozenLake TT decoding comparison on invariant safety (\texttt{avoid\_holes}): grouped metric bars and runtime bars.}
+\label{fig:fl_tt_decoding}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.95\linewidth}{
+\textbf{Replace with:} \texttt{paper/figures/frozenlake/tt\_pareto\_return\_sat.png}, \texttt{tt\_pareto\_return\_violation.png}, and \texttt{tt\_alpha\_temperature\_heatmap.png}
+}}
+\caption{FrozenLake TT logic-weight sweep and trade-off plots on reach-while-safe specifications.}
+\label{fig:fl_tt_sweep}
+\end{figure}
+
+\paragraph{DT baseline and logic-enhanced variants.}
+We report DT vanilla vs.\ random baseline, DT-LTF-2 constrained action selection sensitivity, DT-LTF-1 training-time regularization sweeps, and DT-LTF-3 kNN continuation planner sensitivity.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.95\linewidth}{
+\textbf{Replace with:} \texttt{paper/figures/frozenlake/dt\_baseline\_vs\_random.png}, \texttt{dt\_ltf2\_heatmaps.png}, \texttt{dt\_ltf1\_bars.png}, \texttt{dt\_knn\_heatmaps.png}
+}}
+\caption{FrozenLake DT-family results: baseline reference, constrained planning sensitivity, training-time regularization, and kNN continuation planning.}
+\label{fig:fl_dt_family}
+\end{figure}
+
+\paragraph{Unified TT/DT comparison.}
+We compare TT vanilla, TT logic-enhanced/constrained decoding, DT vanilla, and DT-LTF variants on a common reach-while-safe configuration.
+
+\begin{table}[t]
+\caption{FrozenLake unified comparison (representative reach-while-safe setting). Values populated from aggregated comparison CSV.}
+\label{tab:fl_unified}
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+Method & Return & Satisfaction & Violation & Runtime \\
+\midrule
+TT vanilla & \texttt{TBD} & \texttt{TBD} & \texttt{TBD} & \texttt{TBD} \\
+TT + LTF / constrained & \texttt{TBD} & \texttt{TBD} & \texttt{TBD} & \texttt{TBD} \\
+DT vanilla & \texttt{TBD} & \texttt{TBD} & \texttt{TBD} & \texttt{TBD} \\
+DT-LTF-1 & \texttt{TBD} & \texttt{TBD} & \texttt{TBD} & \texttt{TBD} \\
+DT-LTF-2 & \texttt{TBD} & \texttt{TBD} & \texttt{TBD} & \texttt{TBD} \\
+DT-LTF-3 & \texttt{TBD} & \texttt{TBD} & \texttt{TBD} & \texttt{TBD} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{ColourBomb}
+\paragraph{Benchmark layouts and specification coverage.}
+We evaluate on easy and bottleneck layouts and report invariant, reach-while-safe, and response-like (memory-style) specifications.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.95\linewidth}{
+\textbf{Replace with:} \texttt{paper/figures/colourbomb/layouts\_and\_specs.png}
+}}
+\caption{ColourBomb benchmark layouts and representative specification coverage (layout visualization and/or dataset/spec summary).}
+\label{fig:cb_layouts}
+\end{figure}
+
+\paragraph{TT family and DT family results.}
+We report TT decoding and logic-regularization experiments on easy and bottleneck layouts, and DT baseline/DT-LTF variants including constrained planning and kNN continuation on both invariant and temporal specifications.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.95\linewidth}{
+\textbf{Replace with:} \texttt{paper/figures/colourbomb/tt\_results.png}, \texttt{dt\_results.png}, \texttt{suite\_heatmap\_easy.png}, \texttt{suite\_heatmap\_bottleneck.png}
+}}
+\caption{ColourBomb results: TT and DT family comparisons and multi-spec suite heatmaps for easy and bottleneck layouts.}
+\label{fig:cb_results}
+\end{figure}
+
+\subsection{NRM Navigation}
+\paragraph{TT and DT comparisons on safety-centric navigation.}
+We evaluate TT decoding variants and TT logic settings, as well as DT vanilla, DT-LTF-2 constrained planning, DT-LTF-1 training-time regularization, and DT-LTF-3 kNN continuation on invariant and reach-while-safe specifications.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.95\linewidth}{
+\textbf{Replace with:} \texttt{paper/figures/nrm/tt\_decoding\_and\_sweeps.png}, \texttt{paper/figures/nrm/dt\_family.png}
+}}
+\caption{NRM navigation results for TT and DT families across invariant and reach-while-safe specifications.}
+\label{fig:nrm_results}
+\end{figure}
+
+\paragraph{NRM suite evaluation.}
+We aggregate results across the NRM specification suite for TT and DT methods.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.95\linewidth}{
+\textbf{Replace with:} \texttt{paper/figures/nrm/suite\_heatmap.png} and \texttt{paper/figures/nrm/suite\_bars.png}
+}}
+\caption{NRM navigation suite evaluation: per-spec satisfaction heatmap and category-level grouped bars.}
+\label{fig:nrm_suite}
+\end{figure}
+
+\subsection{Cross-Benchmark Comparisons}
+\paragraph{Invariant safety specifications.}
+We compare method families on matched invariant safety presets across FrozenLake, ColourBomb, and NRM navigation.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.95\linewidth}{
+\textbf{Replace with:} \texttt{paper/figures/cross/invariant\_faceted\_bars.png} and \texttt{paper/figures/cross/invariant\_heatmap.png}
+}}
+\caption{Cross-benchmark comparison on invariant safety specifications.}
+\label{fig:cross_invariant}
+\end{figure}
+
+\paragraph{Reach-while-safe specifications.}
+We compare method families on matched reach-while-safe presets across all three environments and report unified trade-off plots.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.95\linewidth}{
+\textbf{Replace with:} \texttt{paper/figures/cross/reachsafe\_faceted\_bars.png}, \texttt{paper/figures/cross/reachsafe\_pareto.png}
+}}
+\caption{Cross-benchmark comparison on reach-while-safe specifications.}
+\label{fig:cross_reachsafe}
+\end{figure}
+
+\paragraph{Temporal-specification generality.}
+Using suite outputs, we aggregate by specification category (invariant, reach-while-safe, response-like, bounded when available) and report normalized method scores.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.95\linewidth}{
+\textbf{Replace with:} \texttt{paper/figures/cross/spec\_category\_heatmap.png} and \texttt{paper/figures/cross/spec\_category\_bars.png}
+}}
+\caption{Temporal-specification generality across environments and method families.}
+\label{fig:cross_spec_generality}
+\end{figure}
+
+\subsection{Trade-off and Sensitivity Analyses}
+\paragraph{TT trade-off sweeps.}
+We report TT parameter sweeps (logic weight, temperature, sampling controls) on reach-while-safe specs in each benchmark, including Pareto fronts and heatmaps.
+
+\paragraph{DT-LTF-2 constrained planning sensitivity.}
+We report sensitivity to candidate count, lookahead depth, and satisfaction weighting, with runtime and fallback/pruning diagnostics.
+
+\paragraph{DT-LTF-1 and DT-LTF-3 sensitivity.}
+We report logic-weight sensitivity for DT-LTF-1 and kNN/weight sensitivity for DT-LTF-3 across supported environments/specs.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.95\linewidth}{
+\textbf{Replace with:} \texttt{paper/figures/sensitivity/tt\_crossenv\_paretos.png}, \texttt{dt\_ltf2\_heatmaps\_crossenv.png}, \texttt{dt\_ltf1\_alpha\_curves.png}, \texttt{dt\_knn\_sensitivity.png}
+}}
+\caption{Trade-off and sensitivity analyses for TT and DT logic-enhanced methods across benchmarks.}
+\label{fig:sensitivity}
+\end{figure}
+
+\subsection{Diagnostics, Qualitative Results, and Efficiency}
+\paragraph{Automata diagnostics.}
+We export DFA summaries and graph visualizations for representative specs and report state counts, sink states, and symbol coverage diagnostics.
+
+\paragraph{Qualitative trajectories.}
+For each benchmark, we provide matched-seed baseline vs.\ constrained trajectories with hazard/goal events and DFA state progression.
+
+\paragraph{Runtime overhead.}
+We aggregate runtime costs for training-time regularization and test-time constrained decoding/planning, and report overhead relative to baseline methods.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.95\linewidth}{
+\textbf{Replace with:} \texttt{paper/figures/diagnostics/dfa\_panel.png}, \texttt{trajectory\_comparisons.png}, \texttt{runtime\_overhead.png}
+}}
+\caption{Diagnostics and qualitative results: DFA visualizations, matched-seed trajectory comparisons, and runtime overhead summaries.}
+\label{fig:diagnostics_qual_runtime}
+\end{figure}
+
+
