@@ -235,6 +235,7 @@ def _build_common_cmd(args: argparse.Namespace) -> list[str]:
     cmd.extend(["--logic_sample_weighting", str(args.logic_sample_weighting)])
     cmd.extend(["--cb_longest_path_max_expansions", str(args.cb_longest_path_max_expansions)])
     cmd.extend(["--cb_policy_mix_sampling", str(args.cb_policy_mix_sampling)])
+    cmd.extend(["--cb_state_semantics", str(args.cb_state_semantics)])
     if args.cb_policy_mix_normal_spec is not None:
         cmd.extend(["--cb_policy_mix_normal_spec", str(args.cb_policy_mix_normal_spec)])
 
@@ -306,6 +307,7 @@ def parse_args(argv: list[str] | None = None):
     p.add_argument("--cb_longest_path_max_expansions", type=int, default=500000)
     p.add_argument("--cb_policy_mix_sampling", type=str, choices=["fixed", "normal"], default="fixed")
     p.add_argument("--cb_policy_mix_normal_spec", type=str, default=None)
+    p.add_argument("--cb_state_semantics", type=str, choices=["pre", "post"], default="post")
     p.add_argument("--logic_state_only", action="store_true")
     p.add_argument("--use_safe_dfa", action="store_true")
     p.add_argument("--skip_dataset_analysis", action="store_true")

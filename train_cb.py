@@ -290,6 +290,7 @@ def build_dataset(args):
             policy_mix_spec=getattr(args, "cb_policy_mix_spec", "random:1.0"),
             policy_mix_sampling=getattr(args, "cb_policy_mix_sampling", "fixed"),
             policy_mix_normal_spec=getattr(args, "cb_policy_mix_normal_spec", None),
+            state_semantics=getattr(args, "cb_state_semantics", "post"),
             longest_path_max_expansions=getattr(args, "cb_longest_path_max_expansions", 500000),
         )
     elif args.env == "nrm_nav":
@@ -763,6 +764,7 @@ def analyze_dataset(args, dataset, adapter, raw_dfa):
     dfa_list = raw_dfa if isinstance(raw_dfa, list) else [raw_dfa]
     seg_sat_results = []
     ep_sat_results = []
+    ep_sat_vectors = []
 
     for idx, dfa in enumerate(dfa_list):
         # satisfaction on segments (dataset items)
@@ -791,16 +793,118 @@ def analyze_dataset(args, dataset, adapter, raw_dfa):
                 flat = flat.unsqueeze(0)
                 sat = adapter.batch_check_dfa_sat(flat, dfa)
                 ep_sats.append(float(sat[0].item()))
+            ep_arr = np.asarray(ep_sats, dtype=np.float32)
+            ep_sat_vectors.append(ep_arr)
             ep_sat_results.append(
                 {
                     "dfa_index": idx,
                     "mean_sat_episodes": float(np.mean(ep_sats)) if ep_sats else None,
+                    "sat_episode_count": int(np.sum(ep_arr >= 0.5)) if ep_sats else 0,
                     "num_episodes_checked": n_eps,
                 }
             )
 
     summary["constraint_satisfaction_segments"] = seg_sat_results
     summary["constraint_satisfaction_episodes"] = ep_sat_results
+
+    if ep_sat_vectors:
+        n = min(len(v) for v in ep_sat_vectors)
+        if n > 0:
+            sat_mat = np.stack([v[:n] >= 0.5 for v in ep_sat_vectors], axis=1)
+            sat_all = np.all(sat_mat, axis=1)
+            sat_any = np.any(sat_mat, axis=1)
+            summary["constraint_satisfaction_all_formulas"] = {
+                "num_episodes_checked": int(n),
+                "sat_all_count": int(np.sum(sat_all)),
+                "sat_all_rate": float(np.mean(sat_all)),
+                "sat_any_count": int(np.sum(sat_any)),
+                "sat_any_rate": float(np.mean(sat_any)),
+            }
+
+    # Explicit episode outcome analysis (most relevant for CB).
+    if args.env == "cb":
+        ep_rewards = getattr(dataset, "episode_rewards", [])
+        if ep_rewards:
+            env_cfg = getattr(getattr(dataset, "env", None), "cfg", None)
+            max_steps_cfg = int(getattr(env_cfg, "max_steps", 200))
+            step_r = float(getattr(env_cfg, "step_reward", -0.01))
+            goal_r = float(getattr(env_cfg, "goal_reward", 1.0))
+            bomb_r = float(getattr(env_cfg, "bomb_reward", -1.0))
+            # Terminal reward levels in this env:
+            # goal terminal ~= step_r + goal_r, bomb terminal ~= step_r + bomb_r
+            goal_thresh = 0.5 * (step_r + goal_r)
+            bomb_thresh = 0.5 * (step_r + bomb_r)
+
+            outcome_counts = {"goal": 0, "bomb_hit": 0, "timeout": 0, "other": 0}
+            for rew in ep_rewards:
+                if len(rew) == 0:
+                    outcome_counts["other"] += 1
+                    continue
+                T = int(len(rew))
+                last = float(rew[-1])
+                if T >= max_steps_cfg:
+                    outcome_counts["timeout"] += 1
+                elif last >= goal_thresh:
+                    outcome_counts["goal"] += 1
+                elif last <= bomb_thresh:
+                    outcome_counts["bomb_hit"] += 1
+                else:
+                    outcome_counts["other"] += 1
+
+            total = float(sum(outcome_counts.values()))
+            safe_count = int(outcome_counts["goal"] + outcome_counts["timeout"] + outcome_counts["other"])
+            outcome_rates = {f"{k}_rate": (v / total if total > 0 else 0.0) for k, v in outcome_counts.items()}
+            outcome_rates["safe_rate"] = safe_count / total if total > 0 else 0.0
+            outcome_rates["bomb_hit_rate"] = outcome_counts["bomb_hit"] / total if total > 0 else 0.0
+
+            summary["episode_outcomes"] = {
+                "counts": outcome_counts,
+                "rates": outcome_rates,
+                "safe_count": safe_count,
+                "total_episodes": int(total),
+            }
+
+            sat_all_rate = (
+                summary.get("constraint_satisfaction_all_formulas", {}).get("sat_all_rate", None)
+            )
+            if sat_all_rate is not None:
+                diff = float(sat_all_rate) - float(outcome_rates["safe_rate"])
+                summary["constraint_outcome_consistency"] = {
+                    "constraint_sat_all_rate": float(sat_all_rate),
+                    "empirical_safe_rate": float(outcome_rates["safe_rate"]),
+                    "rate_gap_sat_minus_safe": float(diff),
+                    "potential_semantic_mismatch": bool(abs(diff) > 0.05),
+                    "note": (
+                        "Large gap often means DFA propositions are defined on pre-action states, "
+                        "while bomb hits are post-action outcomes."
+                    ),
+                }
+
+            # Save explicit outcome table
+            outcomes_csv = os.path.join(out_dir, "episode_outcomes.csv")
+            with open(outcomes_csv, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["outcome", "count", "rate"])
+                for k in ["goal", "bomb_hit", "timeout", "other"]:
+                    writer.writerow([k, outcome_counts[k], outcome_rates[f"{k}_rate"]])
+                writer.writerow(["safe", safe_count, outcome_rates["safe_rate"]])
+
+            # Plot outcome distribution
+            labels = ["goal", "bomb_hit", "timeout", "other", "safe"]
+            values = [
+                outcome_counts["goal"],
+                outcome_counts["bomb_hit"],
+                outcome_counts["timeout"],
+                outcome_counts["other"],
+                safe_count,
+            ]
+            plt.figure(figsize=(7, 4))
+            plt.bar(labels, values)
+            plt.ylabel("Episode count")
+            plt.title("CB dataset episode outcomes")
+            plt.tight_layout()
+            plt.savefig(os.path.join(out_dir, "episode_outcomes_bar.png"))
+            plt.close()
 
     # Save summary JSON
     summary_path = os.path.join(out_dir, "summary.json")
@@ -943,6 +1047,17 @@ def get_arg_parser(add_help=True):
             "Optional per-policy normal parameters for --cb_policy_mix_sampling normal. "
             "Format: name:mean:std[,name:mean:std...]. "
             "Example: random:0.7:0.1,shortest_safe:0.2:0.08,longest_safe:0.1:0.05"
+        ),
+    )
+    p.add_argument(
+        "--cb_state_semantics",
+        type=str,
+        choices=["pre", "post"],
+        default="post",
+        help=(
+            "Which state to place in the CB transition token state slot: "
+            "'pre' uses state before action (legacy), "
+            "'post' uses next state after action (recommended; aligns with hazards/outcomes)."
         ),
     )
     p.add_argument(

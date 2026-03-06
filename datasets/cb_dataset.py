@@ -48,6 +48,7 @@ class CBSequenceDataset(Dataset):
         policy_mix_spec="random:1.0",
         policy_mix_sampling="fixed",
         policy_mix_normal_spec=None,
+        state_semantics="post",
         longest_path_max_expansions=500000,
     ):
         self.sequence_length = sequence_length
@@ -58,11 +59,14 @@ class CBSequenceDataset(Dataset):
         self.policy_mix_normal_spec = (
             None if policy_mix_normal_spec is None else str(policy_mix_normal_spec)
         )
+        self.state_semantics = str(state_semantics)
         self.longest_path_max_expansions = int(longest_path_max_expansions)
         if self.target_shift not in {"token", "transition"}:
             raise ValueError("target_shift must be 'token' or 'transition'.")
         if self.policy_mix_sampling not in {"fixed", "normal"}:
             raise ValueError("policy_mix_sampling must be 'fixed' or 'normal'.")
+        if self.state_semantics not in {"pre", "post"}:
+            raise ValueError("state_semantics must be 'pre' or 'post'.")
         self.token_schema = get_schema_for_env("cb")
         self.schema_id = self.token_schema.schema_id
 
@@ -111,10 +115,11 @@ class CBSequenceDataset(Dataset):
             path_step = 0
 
             for t in range(max_steps):
+                pre_s = int(s)
                 a = _choose_action(
                     env=self.env,
                     rng=rng,
-                    state=int(s),
+                    state=pre_s,
                     policy_name=policy_name,
                     path_step=path_step,
                     shortest_safe_policy=self.shortest_safe_policy,
@@ -123,7 +128,8 @@ class CBSequenceDataset(Dataset):
                     longest_any_path=self.longest_any_path,
                 )
                 ns, r, done, _ = self.env.step(a)
-                states.append(s)
+                token_state = int(pre_s if self.state_semantics == "pre" else ns)
+                states.append(token_state)
                 actions.append(a)
                 rewards.append(r)
                 s = ns
