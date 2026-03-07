@@ -1,4 +1,5 @@
 import argparse
+import csv
 import json
 import multiprocessing as mp
 import os
@@ -11,6 +12,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from queue import Empty
 
+import numpy as np
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYTHON = sys.executable
@@ -20,9 +23,9 @@ PYTHON = sys.executable
 class Job:
     spec: str
     policy_mix_spec: str
-    decoding_mode: str
     seed: int
-    run_dir: str
+    seed_root: str
+    train_root: str
 
 
 @dataclass
@@ -34,12 +37,49 @@ class WorkerConfig:
     continue_on_error: bool
     skip_completed: bool
     dry_run: bool
-    cmd_common: list[str]
+    train_cmd_common: list[str]
+    eval_cmd_common: list[str]
+    decoding_modes: list[str]
+    baseline_keys: list[str]
     extra_args: list[str]
+    beam_width: int
+    epochs: int
+
+
+SUMMARY_FIELDS = [
+    "baseline",
+    "return_mean",
+    "return_std",
+    "violation_rate",
+    "satisfaction_rate",
+    "runtime_sec",
+    "env",
+    "spec",
+    "seed",
+    "num_episodes",
+    "satisfaction_soft_mean",
+    "violation_rate_episode",
+    "violation_rate_step",
+    "goal_rate",
+    "bomb_hit_rate",
+    "hazard_hit_rate",
+    "decoding_mode",
+    "beam_width",
+    "model_type",
+    "checkpoint_path",
+    "run_id",
+    "timestamp_utc",
+]
 
 
 def _slug(text: str) -> str:
     return re.sub(r"[^a-zA-Z0-9._-]+", "_", str(text)).strip("_")
+
+
+def _write_json(path: str, payload: dict) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
 
 
 def _gpu_available(gpu_id: int | None) -> bool:
@@ -53,25 +93,317 @@ def _gpu_available(gpu_id: int | None) -> bool:
     return str(gpu_id) in out
 
 
-def _write_json(path: str, payload: dict) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(payload, f, indent=2, sort_keys=True)
+def _parse_gpu_worker_map(raw: str | None, workers: int) -> list[int | None]:
+    if not raw:
+        return [None for _ in range(workers)]
+    vals = [x.strip() for x in str(raw).split(",") if x.strip() != ""]
+    parsed = [int(v) for v in vals]
+    if len(parsed) != workers:
+        raise ValueError(
+            f"--gpu_worker_map length ({len(parsed)}) must equal --parallel_workers ({workers})."
+        )
+    return parsed
+
+
+def _alpha_tag(alpha: float) -> str:
+    return str(alpha)
+
+
+def _baseline_keys(alphas: list[float]) -> list[str]:
+    return ["vanilla"] + [f"logic_alpha{_alpha_tag(a)}" for a in alphas]
+
+
+def _normalize_logic_alphas(raw_alphas: list[float]) -> list[float]:
+    seen = set()
+    out: list[float] = []
+    for a in raw_alphas:
+        fa = float(a)
+        if abs(fa) < 1e-12:
+            continue
+        key = f"{fa:.12g}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(fa)
+    return out
+
+
+def _checkpoint_path(train_root: str, baseline_key: str, epochs: int) -> str:
+    return os.path.join(train_root, baseline_key, f"cb_state_{epochs - 1}.pt")
+
+
+def _all_checkpoints_exist(train_root: str, baselines: list[str], epochs: int) -> bool:
+    for baseline in baselines:
+        if not os.path.exists(_checkpoint_path(train_root, baseline, epochs)):
+            return False
+    return True
+
+
+def _mode_seed_dir(seed_root: str, mode: str) -> str:
+    seed_name = os.path.basename(seed_root)
+    mix_root = os.path.dirname(seed_root)
+    return os.path.join(mix_root, f"mode_{mode}", seed_name)
+
+
+def _has_mode_complete(mode_dir: str, baselines: list[str]) -> bool:
+    csv_path = os.path.join(mode_dir, "baseline_metrics.csv")
+    if not os.path.exists(csv_path):
+        return False
+    for baseline in baselines:
+        if not os.path.exists(os.path.join(mode_dir, baseline, "metrics.json")):
+            return False
+    return True
+
+
+def _load_json(path: str) -> dict:
+    with open(path) as f:
+        return json.load(f)
+
+
+def _null_metrics(
+    *,
+    env: str,
+    spec: str,
+    seed: int,
+    checkpoint_path: str | None,
+    decoding_mode: str,
+    beam_width: int,
+) -> dict:
+    return {
+        "return_mean": None,
+        "return_std": None,
+        "violation_rate": None,
+        "satisfaction_rate": None,
+        "runtime_sec": None,
+        "env": env,
+        "spec": spec,
+        "seed": int(seed),
+        "num_episodes": None,
+        "satisfaction_soft_mean": None,
+        "violation_rate_episode": None,
+        "violation_rate_step": None,
+        "goal_rate": None,
+        "bomb_hit_rate": None,
+        "hazard_hit_rate": None,
+        "decoding_mode": decoding_mode,
+        "beam_width": int(beam_width),
+        "model_type": "tt",
+        "checkpoint_path": checkpoint_path,
+        "run_id": None,
+        "timestamp_utc": None,
+    }
+
+
+def _write_summary_artifacts(base_dir: str, results: dict[str, dict]) -> tuple[str, str]:
+    os.makedirs(base_dir, exist_ok=True)
+    json_path = os.path.join(base_dir, "baseline_metrics.json")
+    with open(json_path, "w") as f:
+        json.dump(results, f, indent=2)
+
+    csv_path = os.path.join(base_dir, "baseline_metrics.csv")
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=SUMMARY_FIELDS)
+        writer.writeheader()
+        for baseline_name, metrics in results.items():
+            row = {"baseline": baseline_name}
+            row.update({k: metrics.get(k) for k in SUMMARY_FIELDS if k != "baseline"})
+            writer.writerow(row)
+    return json_path, csv_path
+
+
+def _save_summary_plots(base_dir: str, results: dict[str, dict]) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        return
+
+    plots_dir = os.path.join(base_dir, "plots")
+    os.makedirs(plots_dir, exist_ok=True)
+
+    labels = list(results.keys())
+    if not labels:
+        return
+
+    def _vals(key):
+        out = []
+        for label in labels:
+            val = results[label].get(key)
+            out.append(np.nan if val is None else float(val))
+        return np.asarray(out, dtype=np.float32)
+
+    width = 0.2
+    x = np.arange(len(labels))
+    keys = ["goal_rate", "bomb_hit_rate", "satisfaction_rate", "return_mean"]
+    vals = [_vals(k) for k in keys]
+
+    plt.figure(figsize=(8, 4))
+    for i, (k, v) in enumerate(zip(keys, vals)):
+        plt.bar(x + (i - 1.5) * width, np.nan_to_num(v, nan=0.0), width=width, label=k)
+    plt.xticks(x, labels, rotation=15, ha="right")
+    plt.legend(loc="best", fontsize=8)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, "metrics_bar.png"))
+    plt.close()
+
+    sats = _vals("satisfaction_rate")
+    plt.figure(figsize=(6, 4))
+    plt.plot(range(len(labels)), np.nan_to_num(sats, nan=0.0), marker="o")
+    plt.xticks(range(len(labels)), labels, rotation=15, ha="right")
+    plt.ylim(-0.05, 1.05)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, "satisfaction_trend.png"))
+    plt.close()
+
+    rets = _vals("return_mean")
+    plt.figure(figsize=(5, 4))
+    plt.scatter(np.nan_to_num(rets, nan=0.0), np.nan_to_num(sats, nan=0.0))
+    for i, label in enumerate(labels):
+        plt.annotate(label, (np.nan_to_num(rets[i], nan=0.0), np.nan_to_num(sats[i], nan=0.0)))
+    plt.xlabel("return_mean")
+    plt.ylabel("satisfaction_rate")
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, "return_vs_satisfaction.png"))
+    plt.close()
+
+
+def _run_subprocess(
+    cmd: list[str],
+    *,
+    log_path: str,
+    gpu_id: int | None,
+    dry_run: bool,
+    log_prefix: str,
+) -> tuple[int, str]:
+    env = os.environ.copy()
+    env["HOME"] = env.get("HOME", str(REPO_ROOT))
+    env["MPLCONFIGDIR"] = env.get("MPLCONFIGDIR", str(REPO_ROOT / ".config" / "matplotlib"))
+    os.makedirs(env["MPLCONFIGDIR"], exist_ok=True)
+    if gpu_id is not None:
+        env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+
+    cmd_str = " ".join(shlex.quote(x) for x in cmd)
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    if dry_run:
+        with open(log_path, "a") as lf:
+            lf.write(f"[dry-run:{log_prefix}] {cmd_str}\n")
+        return 0, cmd_str
+
+    with open(log_path, "a") as lf:
+        lf.write(f"[{log_prefix}] ts={time.time()}\n")
+        lf.write(f"[cmd] {cmd_str}\n")
+        lf.flush()
+        proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env, stdout=lf, stderr=lf)
+    return int(proc.returncode), cmd_str
+
+
+def _train_once(job: Job, cfg: WorkerConfig) -> tuple[str, str | None]:
+    train_log = os.path.join(job.train_root, "console.log")
+    if cfg.skip_completed and _all_checkpoints_exist(job.train_root, cfg.baseline_keys, cfg.epochs):
+        return "skipped", None
+
+    cmd = list(cfg.train_cmd_common)
+    cmd.extend(
+        [
+            "--spec",
+            job.spec,
+            "--seed",
+            str(job.seed),
+            "--cb_policy_mix_spec",
+            job.policy_mix_spec,
+            "--base_run_dir",
+            job.train_root,
+        ]
+    )
+    cmd.extend(cfg.extra_args)
+    rc, cmd_str = _run_subprocess(
+        cmd, log_path=train_log, gpu_id=cfg.gpu_id, dry_run=cfg.dry_run, log_prefix="train"
+    )
+    if rc != 0:
+        return "failed", cmd_str
+    return "ok", cmd_str
+
+
+def _evaluate_mode(job: Job, cfg: WorkerConfig, mode: str) -> tuple[str, dict[str, dict]]:
+    mode_dir = _mode_seed_dir(job.seed_root, mode)
+    os.makedirs(mode_dir, exist_ok=True)
+
+    if cfg.skip_completed and _has_mode_complete(mode_dir, cfg.baseline_keys):
+        results = {}
+        for baseline in cfg.baseline_keys:
+            mpath = os.path.join(mode_dir, baseline, "metrics.json")
+            results[baseline] = _load_json(mpath)
+        return "skipped", results
+
+    results: dict[str, dict] = {}
+    for baseline in cfg.baseline_keys:
+        ckpt = _checkpoint_path(job.train_root, baseline, cfg.epochs)
+        baseline_dir = os.path.join(mode_dir, baseline)
+        os.makedirs(baseline_dir, exist_ok=True)
+        mpath = os.path.join(baseline_dir, "metrics.json")
+        if cfg.skip_completed and os.path.exists(mpath):
+            results[baseline] = _load_json(mpath)
+            continue
+
+        if not os.path.exists(ckpt):
+            results[baseline] = _null_metrics(
+                env="cb",
+                spec=job.spec,
+                seed=job.seed,
+                checkpoint_path=ckpt,
+                decoding_mode=mode,
+                beam_width=cfg.beam_width,
+            )
+            continue
+
+        eval_cmd = list(cfg.eval_cmd_common)
+        eval_cmd.extend(
+            [
+                "--checkpoint",
+                ckpt,
+                "--spec",
+                job.spec,
+                "--seed",
+                str(job.seed),
+                "--cb_policy_mix_spec",
+                job.policy_mix_spec,
+                "--decoding_mode",
+                mode,
+                "--run_dir",
+                baseline_dir,
+            ]
+        )
+        if mode in {"beam", "constrained_beam"}:
+            pass
+        eval_cmd.extend(cfg.extra_args)
+
+        eval_log = os.path.join(baseline_dir, "console.log")
+        rc, _ = _run_subprocess(
+            eval_cmd,
+            log_path=eval_log,
+            gpu_id=cfg.gpu_id,
+            dry_run=cfg.dry_run,
+            log_prefix=f"eval:{mode}:{baseline}",
+        )
+        if rc == 0 and os.path.exists(mpath):
+            results[baseline] = _load_json(mpath)
+        else:
+            results[baseline] = _null_metrics(
+                env="cb",
+                spec=job.spec,
+                seed=job.seed,
+                checkpoint_path=ckpt,
+                decoding_mode=mode,
+                beam_width=cfg.beam_width,
+            )
+
+    _write_summary_artifacts(mode_dir, results)
+    _save_summary_plots(mode_dir, results)
+    return "ok", results
 
 
 def _run_single_job(job: Job, cfg: WorkerConfig) -> dict:
     started = time.time()
-    os.makedirs(job.run_dir, exist_ok=True)
-    metrics_csv = os.path.join(job.run_dir, "baseline_metrics.csv")
-    if cfg.skip_completed and os.path.exists(metrics_csv):
-        return {
-            "status": "skipped",
-            "job": asdict(job),
-            "worker_id": cfg.worker_id,
-            "gpu_id": cfg.gpu_id,
-            "elapsed_sec": 0.0,
-            "reason": "baseline_metrics.csv exists",
-        }
+    os.makedirs(job.seed_root, exist_ok=True)
 
     if cfg.require_gpu and not _gpu_available(cfg.gpu_id):
         return {
@@ -83,79 +415,58 @@ def _run_single_job(job: Job, cfg: WorkerConfig) -> dict:
             "reason": "GPU check failed before job start",
         }
 
-    run_args = {
-        "spec": job.spec,
-        "policy_mix_spec": job.policy_mix_spec,
-        "decoding_mode": job.decoding_mode,
-        "seed": int(job.seed),
-        "worker_id": cfg.worker_id,
-        "gpu_id": cfg.gpu_id,
-        "require_gpu": cfg.require_gpu,
-        "extra_args": cfg.extra_args,
-    }
-    _write_json(os.path.join(job.run_dir, "job_args.json"), run_args)
+    _write_json(
+        os.path.join(job.seed_root, "job_args.json"),
+        {
+            "spec": job.spec,
+            "policy_mix_spec": job.policy_mix_spec,
+            "seed": int(job.seed),
+            "worker_id": cfg.worker_id,
+            "gpu_id": cfg.gpu_id,
+            "require_gpu": cfg.require_gpu,
+            "decoding_modes": cfg.decoding_modes,
+            "baselines": cfg.baseline_keys,
+            "extra_args": cfg.extra_args,
+        },
+    )
 
-    cmd = list(cfg.cmd_common)
-    cmd.extend([
-        "--spec",
-        job.spec,
-        "--seed",
-        str(job.seed),
-        "--cb_policy_mix_spec",
-        job.policy_mix_spec,
-        "--decoding_mode",
-        job.decoding_mode,
-        "--base_run_dir",
-        job.run_dir,
-    ])
-    if job.decoding_mode in {"beam", "constrained_beam"}:
-        # beam/constrained settings are expected in cmd_common; no-op here.
-        pass
-    cmd.extend(cfg.extra_args)
-
-    log_path = os.path.join(job.run_dir, "console.log")
-    env = os.environ.copy()
-    env["HOME"] = env.get("HOME", str(REPO_ROOT))
-    env["MPLCONFIGDIR"] = env.get("MPLCONFIGDIR", str(REPO_ROOT / ".config" / "matplotlib"))
-    os.makedirs(env["MPLCONFIGDIR"], exist_ok=True)
-    if cfg.gpu_id is not None:
-        env["CUDA_VISIBLE_DEVICES"] = str(cfg.gpu_id)
-
-    cmd_str = " ".join(shlex.quote(x) for x in cmd)
-    if cfg.dry_run:
-        with open(log_path, "a") as lf:
-            lf.write(f"[dry-run] {cmd_str}\n")
+    train_status, train_cmd = _train_once(job, cfg)
+    if train_status == "failed":
+        status = "failed"
+        if cfg.require_gpu and not _gpu_available(cfg.gpu_id):
+            status = "gpu_unavailable"
         return {
-            "status": "dry_run",
+            "status": status,
             "job": asdict(job),
             "worker_id": cfg.worker_id,
             "gpu_id": cfg.gpu_id,
             "elapsed_sec": float(time.time() - started),
-            "command": cmd_str,
+            "train_command": train_cmd,
         }
 
-    with open(log_path, "a") as lf:
-        lf.write(f"[start] worker={cfg.worker_id} gpu={cfg.gpu_id} ts={time.time()}\n")
-        lf.write(f"[cmd] {cmd_str}\n")
-        lf.flush()
-        proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env, stdout=lf, stderr=lf)
+    mode_status = {}
+    for mode in cfg.decoding_modes:
+        if cfg.require_gpu and not _gpu_available(cfg.gpu_id):
+            return {
+                "status": "gpu_unavailable",
+                "job": asdict(job),
+                "worker_id": cfg.worker_id,
+                "gpu_id": cfg.gpu_id,
+                "elapsed_sec": float(time.time() - started),
+                "reason": f"GPU became unavailable before mode={mode}",
+            }
+        mstatus, _ = _evaluate_mode(job, cfg, mode)
+        mode_status[mode] = mstatus
 
-    status = "ok" if proc.returncode == 0 else "failed"
-    result = {
-        "status": status,
-        "returncode": int(proc.returncode),
+    return {
+        "status": "ok",
         "job": asdict(job),
         "worker_id": cfg.worker_id,
         "gpu_id": cfg.gpu_id,
         "elapsed_sec": float(time.time() - started),
-        "command": cmd_str,
+        "train_status": train_status,
+        "mode_status": mode_status,
     }
-
-    if proc.returncode != 0 and cfg.require_gpu and not _gpu_available(cfg.gpu_id):
-        result["status"] = "gpu_unavailable"
-        result["reason"] = "GPU became unavailable during/after job"
-
-    return result
 
 
 def _worker_loop(cfg: WorkerConfig, q_in: mp.Queue, q_out: mp.Queue, stop_event: mp.Event):
@@ -180,46 +491,29 @@ def _worker_loop(cfg: WorkerConfig, q_in: mp.Queue, q_out: mp.Queue, stop_event:
             break
 
 
-def _parse_gpu_worker_map(raw: str | None, workers: int) -> list[int | None]:
-    if not raw:
-        return [None for _ in range(workers)]
-    vals = [x.strip() for x in str(raw).split(",") if x.strip() != ""]
-    parsed = [int(v) for v in vals]
-    if len(parsed) != workers:
-        raise ValueError(
-            f"--gpu_worker_map length ({len(parsed)}) must equal --parallel_workers ({workers})."
-        )
-    return parsed
-
-
 def _build_jobs(args: argparse.Namespace) -> list[Job]:
     jobs: list[Job] = []
     for spec in args.specs:
         for mix in args.policy_mix_specs:
-            for mode in args.decoding_modes:
-                for seed in args.seeds:
-                    run_dir = os.path.join(
-                        args.output_root,
-                        f"spec_{_slug(spec)}",
-                        f"mix_{_slug(mix)}",
-                        f"mode_{mode}",
-                        f"seed_{int(seed)}",
+            for seed in args.seeds:
+                spec_dir = os.path.join(args.output_root, f"spec_{_slug(spec)}")
+                mix_dir = os.path.join(spec_dir, f"mix_{_slug(mix)}")
+                seed_root = os.path.join(mix_dir, f"seed_{int(seed)}")
+                train_root = os.path.join(seed_root, "train_shared")
+                jobs.append(
+                    Job(
+                        spec=str(spec),
+                        policy_mix_spec=str(mix),
+                        seed=int(seed),
+                        seed_root=seed_root,
+                        train_root=train_root,
                     )
-                    jobs.append(
-                        Job(
-                            spec=str(spec),
-                            policy_mix_spec=str(mix),
-                            decoding_mode=str(mode),
-                            seed=int(seed),
-                            run_dir=run_dir,
-                        )
-                    )
+                )
     return jobs
 
 
-def _build_common_cmd(args: argparse.Namespace) -> list[str]:
-    cmd = [PYTHON, "scripts/run_baselines.py", "--env", "cb", "--evaluate", "--save_plots"]
-
+def _build_train_cmd_common(args: argparse.Namespace, logic_alphas: list[float]) -> list[str]:
+    cmd = [PYTHON, "scripts/run_baselines.py", "--env", "cb"]
     cmd.extend(["--num_episodes", str(args.num_episodes)])
     cmd.extend(["--max_steps", str(args.max_steps)])
     cmd.extend(["--epochs", str(args.epochs)])
@@ -238,30 +532,53 @@ def _build_common_cmd(args: argparse.Namespace) -> list[str]:
     cmd.extend(["--cb_state_semantics", str(args.cb_state_semantics)])
     if args.cb_policy_mix_normal_spec is not None:
         cmd.extend(["--cb_policy_mix_normal_spec", str(args.cb_policy_mix_normal_spec)])
-
     cmd.extend(["--target_shift", str(args.target_shift)])
+    if args.logic_state_only:
+        cmd.append("--logic_state_only")
+    if args.use_safe_dfa:
+        cmd.append("--use_safe_dfa")
+    if args.skip_dataset_analysis:
+        cmd.append("--skip_dataset_analysis")
+    if logic_alphas:
+        cmd.extend(["--baselines", "vanilla", "logic"])
+        cmd.extend(["--alphas", *[str(a) for a in logic_alphas]])
+    else:
+        cmd.extend(["--baselines", "vanilla"])
+    return cmd
+
+
+def _build_eval_cmd_common(args: argparse.Namespace) -> list[str]:
+    cmd = [PYTHON, "scripts/evaluate.py", "--env", "cb"]
+    # Avoid rebuilding huge offline datasets during checkpoint-only evaluation.
+    eval_dataset_eps = args.eval_dataset_num_episodes
+    if eval_dataset_eps is None:
+        eval_dataset_eps = min(int(args.num_episodes), int(args.eval_num_episodes))
+    cmd.extend(["--num_episodes", str(int(eval_dataset_eps))])
+    cmd.extend(["--max_steps", str(args.eval_max_steps)])
     cmd.extend(["--eval_num_episodes", str(args.eval_num_episodes)])
     cmd.extend(["--eval_max_steps", str(args.eval_max_steps)])
+    cmd.extend(["--target_shift", str(args.target_shift)])
     cmd.extend(["--beam_width", str(args.beam_width)])
     cmd.extend(["--plan_horizon", str(args.plan_horizon)])
     cmd.extend(["--sat_rerank_weight", str(args.sat_rerank_weight)])
-
+    cmd.extend(["--cb_policy_mix_sampling", str(args.cb_policy_mix_sampling)])
+    cmd.extend(["--cb_state_semantics", str(args.cb_state_semantics)])
+    if args.cb_policy_mix_normal_spec is not None:
+        cmd.extend(["--cb_policy_mix_normal_spec", str(args.cb_policy_mix_normal_spec)])
     if args.logic_state_only:
         cmd.append("--logic_state_only")
     if args.use_safe_dfa:
         cmd.append("--use_safe_dfa")
     if args.hard_prune_reject_sink:
         cmd.append("--hard_prune_reject_sink")
-    if args.skip_dataset_analysis:
-        cmd.append("--skip_dataset_analysis")
-
-    cmd.extend(["--baselines", "vanilla", "logic"])
-    cmd.extend(["--alphas", *[str(a) for a in args.alphas]])
+    cmd.append("--save_plots")
     return cmd
 
 
 def parse_args(argv: list[str] | None = None):
-    p = argparse.ArgumentParser(description="ColourBomb TT matrix runner (multiprocess)")
+    p = argparse.ArgumentParser(
+        description="ColourBomb TT matrix runner (optimized: train once, decode many)"
+    )
     p.add_argument("--output_root", type=str, required=True)
     p.add_argument("--specs", nargs="+", required=True)
     p.add_argument("--policy_mix_specs", nargs="+", required=True)
@@ -294,11 +611,14 @@ def parse_args(argv: list[str] | None = None):
     p.add_argument("--action_weight", type=float, default=1.0)
     p.add_argument("--temperature", type=float, default=0.5)
     p.add_argument("--num_samples", type=int, default=32)
-    p.add_argument("--logic_sample_weighting", type=str, default="importance", choices=["importance", "uniform"])
+    p.add_argument(
+        "--logic_sample_weighting", type=str, default="importance", choices=["importance", "uniform"]
+    )
 
     p.add_argument("--target_shift", type=str, default="token", choices=["token", "transition"])
     p.add_argument("--eval_num_episodes", type=int, default=200)
     p.add_argument("--eval_max_steps", type=int, default=200)
+    p.add_argument("--eval_dataset_num_episodes", type=int, default=None)
     p.add_argument("--beam_width", type=int, default=4)
     p.add_argument("--plan_horizon", type=int, default=4)
     p.add_argument("--sat_rerank_weight", type=float, default=1.0)
@@ -330,7 +650,10 @@ def main(argv: list[str] | None = None):
     if args.require_gpu and any(g is None for g in gpu_map):
         raise ValueError("When --require_gpu is enabled, provide --gpu_worker_map (e.g. 0,0,1,1).")
 
-    common_cmd = _build_common_cmd(args)
+    logic_alphas = _normalize_logic_alphas(list(args.alphas))
+    baseline_keys = _baseline_keys(logic_alphas)
+    train_cmd_common = _build_train_cmd_common(args, logic_alphas)
+    eval_cmd_common = _build_eval_cmd_common(args)
 
     manifest = {
         "output_root": args.output_root,
@@ -342,15 +665,17 @@ def main(argv: list[str] | None = None):
         "skip_completed": not bool(args.no_skip_completed),
         "dry_run": bool(args.dry_run),
         "extra_args": extra,
-        "common_cmd": common_cmd,
+        "train_cmd_common": train_cmd_common,
+        "eval_cmd_common": eval_cmd_common,
+        "decoding_modes": list(args.decoding_modes),
+        "baseline_keys": baseline_keys,
+        "logic_alphas_effective": logic_alphas,
         "jobs_total": len(jobs),
         "jobs": [asdict(j) for j in jobs],
         "created_ts": time.time(),
+        "optimization_mode": "train_once_shared_decode",
     }
     _write_json(os.path.join(args.output_root, "matrix_manifest.json"), manifest)
-
-    if args.dry_run:
-        print(f"[dry-run] total_jobs={len(jobs)} output_root={args.output_root}")
 
     q_in: mp.Queue = mp.Queue()
     q_out: mp.Queue = mp.Queue()
@@ -371,8 +696,13 @@ def main(argv: list[str] | None = None):
             continue_on_error=bool(args.continue_on_error),
             skip_completed=not bool(args.no_skip_completed),
             dry_run=bool(args.dry_run),
-            cmd_common=common_cmd,
+            train_cmd_common=train_cmd_common,
+            eval_cmd_common=eval_cmd_common,
+            decoding_modes=list(args.decoding_modes),
+            baseline_keys=baseline_keys,
             extra_args=list(extra),
+            beam_width=int(args.beam_width),
+            epochs=int(args.epochs),
         )
         proc = mp.Process(target=_worker_loop, args=(wcfg, q_in, q_out, stop_event), daemon=False)
         proc.start()
@@ -389,14 +719,16 @@ def main(argv: list[str] | None = None):
             job = item.get("job", {})
             print(
                 f"[result] status={status} spec={job.get('spec')} mix={job.get('policy_mix_spec')} "
-                f"mode={job.get('decoding_mode')} seed={job.get('seed')} gpu={item.get('gpu_id')}"
+                f"seed={job.get('seed')} gpu={item.get('gpu_id')}"
             )
-            _write_json(os.path.join(args.output_root, "matrix_progress.json"), {"results": results, "updated_ts": time.time()})
+            _write_json(
+                os.path.join(args.output_root, "matrix_progress.json"),
+                {"results": results, "updated_ts": time.time()},
+            )
         except Empty:
             pass
 
         if stop_event.is_set():
-            # Drain soon; do not start new work across workers.
             while True:
                 try:
                     q_in.get_nowait()
@@ -406,7 +738,6 @@ def main(argv: list[str] | None = None):
     for p in workers:
         p.join(timeout=2)
 
-    # Drain any remaining queue items.
     while True:
         try:
             item = q_out.get_nowait()
@@ -428,7 +759,6 @@ def main(argv: list[str] | None = None):
     }
     _write_json(os.path.join(args.output_root, "matrix_summary.json"), summary)
     _write_json(os.path.join(args.output_root, "matrix_results.json"), {"results": results})
-
     print(f"Done. status_counts={status_counts} results={len(results)}/{len(jobs)}")
 
 
