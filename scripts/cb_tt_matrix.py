@@ -76,6 +76,26 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-zA-Z0-9._-]+", "_", str(text)).strip("_")
 
 
+def _cmd_arg(cmd: list[str], flag: str, default: str | None = None) -> str | None:
+    value = default
+    i = 0
+    while i < len(cmd):
+        if cmd[i] == flag and i + 1 < len(cmd):
+            value = cmd[i + 1]
+            i += 2
+            continue
+        i += 1
+    return value
+
+
+def _build_seed_dataset_artifact_name(job: Job, cfg: WorkerConfig) -> str:
+    # Keep dataset cache stable per seed+mix+semantics so repeated spec runs reuse same artifact.
+    state_semantics = _cmd_arg(cfg.train_cmd_common, "--cb_state_semantics", "post") or "post"
+    base_name = _cmd_arg(cfg.extra_args, "--dataset_artifact_name", "dataset_snapshot") or "dataset_snapshot"
+    mix_slug = _slug(job.policy_mix_spec) or "mix"
+    return _slug(f"{base_name}_{state_semantics}_{mix_slug}_seed{int(job.seed)}")
+
+
 def _write_json(path: str, payload: dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
@@ -315,6 +335,10 @@ def _train_once(job: Job, cfg: WorkerConfig) -> tuple[str, str | None]:
         ]
     )
     cmd.extend(cfg.extra_args)
+    # Ensure one stable train dataset artifact per seed (and policy-mix/semantics).
+    if "--no-save_generated_dataset" not in cfg.extra_args:
+        cmd.extend(["--save_generated_dataset"])
+    cmd.extend(["--dataset_artifact_name", _build_seed_dataset_artifact_name(job, cfg)])
     rc, cmd_str = _run_subprocess(
         cmd, log_path=train_log, gpu_id=cfg.gpu_id, dry_run=cfg.dry_run, log_prefix="train"
     )
@@ -375,6 +399,8 @@ def _evaluate_mode(job: Job, cfg: WorkerConfig, mode: str) -> tuple[str, dict[st
         if mode in {"beam", "constrained_beam"}:
             pass
         eval_cmd.extend(cfg.extra_args)
+        # Eval can be called many times per seed (baseline x decoding mode); avoid dataset clobber spam.
+        eval_cmd.append("--no-save_generated_dataset")
 
         eval_log = os.path.join(baseline_dir, "console.log")
         rc, _ = _run_subprocess(
