@@ -16,6 +16,13 @@ SPECS = {
         "description": "Reach at least one goal state while always avoiding bombs.",
         "formulas": [f"G(!({_BOMBS})) & F({_GOALS})"],
     },
+    "reach_goal_while_avoid_bombs": {
+        "description": (
+            "Alias of reach_goal_while_safe: reach at least one goal state while "
+            "always avoiding bombs."
+        ),
+        "formulas": [f"G(!({_BOMBS})) & F({_GOALS})"],
+    },
     "memory_sequence_yellow": {
         "description": (
             "Weaker memory-style sequencing proxy over existing state propositions."

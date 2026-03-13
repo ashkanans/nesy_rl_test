@@ -42,6 +42,16 @@ def test_resolve_formulas_accepts_runtime_spec_for_cb():
     assert formulas == ["G(!(s0_bin22))"]
 
 
+def test_cb_reach_goal_while_avoid_bombs_alias_matches_reach_goal_while_safe():
+    cb_specs = SPEC_REGISTRY["cb"]
+    assert "reach_goal_while_safe" in cb_specs
+    assert "reach_goal_while_avoid_bombs" in cb_specs
+    assert (
+        cb_specs["reach_goal_while_avoid_bombs"]["formulas"]
+        == cb_specs["reach_goal_while_safe"]["formulas"]
+    )
+
+
 def test_resolve_formulas_rejects_spec_plus_manual_formula():
     args = SimpleNamespace(
         env="cb",
