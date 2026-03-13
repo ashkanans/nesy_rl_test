@@ -2,6 +2,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import sys
 import time
 import warnings
@@ -65,6 +66,127 @@ def _save_args_snapshot(args, out_path: str) -> None:
     payload = {k: _to_jsonable(v) for k, v in vars(args).items()}
     with open(out_path, "w") as f:
         json.dump(payload, f, indent=2, sort_keys=True)
+
+
+def _find_latest_checkpoint(run_dir: str) -> tuple[int | None, str | None]:
+    if not run_dir or not os.path.isdir(run_dir):
+        return None, None
+    pat = re.compile(r"^cb_state_(\d+)\.pt$")
+    best_epoch = None
+    best_path = None
+    for name in os.listdir(run_dir):
+        m = pat.match(name)
+        if not m:
+            continue
+        epoch = int(m.group(1))
+        if best_epoch is None or epoch > best_epoch:
+            best_epoch = epoch
+            best_path = os.path.join(run_dir, name)
+    return best_epoch, best_path
+
+
+def _optimizer_to_device(optimizer, device_name: str):
+    for state in optimizer.state.values():
+        if not isinstance(state, dict):
+            continue
+        for k, v in list(state.items()):
+            if torch.is_tensor(v):
+                state[k] = v.to(device_name)
+
+
+def _to_object_array(items):
+    arr = np.empty(len(items), dtype=object)
+    for i, item in enumerate(items):
+        arr[i] = np.asarray(item)
+    return arr
+
+
+def save_dataset_artifact(args, dataset, artifact_tag: str = "dataset_snapshot"):
+    """
+    Persist generated offline dataset for reproducibility and later analysis.
+
+    Saves:
+      - <stem>.npz with episodes_tokens (+ optional rewards/labels/indices)
+      - <stem>.meta.json with dataset/config summary
+    """
+    if not bool(getattr(args, "save_generated_dataset", True)):
+        return None
+
+    base_dir = getattr(args, "dataset_artifact_dir", None)
+    if not base_dir:
+        run_root = getattr(args, "run_dir", None) or getattr(args, "save_path", None)
+        if run_root is None:
+            run_root = os.path.join(getattr(args, "base_runs_dir", "runs"), "dataset_artifacts")
+        base_dir = os.path.join(str(run_root), "dataset_artifacts")
+    os.makedirs(base_dir, exist_ok=True)
+
+    stem = str(getattr(args, "dataset_artifact_name", None) or artifact_tag).strip()
+    if stem.lower().endswith(".npz"):
+        stem = stem[:-4]
+    if not stem:
+        stem = "dataset_snapshot"
+
+    npz_path = os.path.join(base_dir, f"{stem}.npz")
+    meta_path = os.path.join(base_dir, f"{stem}.meta.json")
+
+    episodes_tokens = list(getattr(dataset, "episodes_tokens", []) or [])
+    episode_rewards = getattr(dataset, "episode_rewards", None)
+    episode_policy_labels = getattr(dataset, "episode_policy_labels", None)
+    indices = getattr(dataset, "indices", None)
+
+    payload = {
+        "episodes_tokens": _to_object_array(episodes_tokens),
+    }
+    if episode_rewards is not None:
+        payload["episode_rewards"] = _to_object_array(list(episode_rewards))
+    if episode_policy_labels is not None:
+        payload["episode_policy_labels"] = np.asarray(list(episode_policy_labels), dtype=object)
+    if indices is not None:
+        payload["indices"] = np.asarray(list(indices), dtype=np.int64)
+
+    np.savez_compressed(npz_path, **payload)
+
+    lengths = [int(np.asarray(ep).shape[0]) for ep in episodes_tokens]
+    rewards_per_episode = (
+        [float(np.asarray(r).sum()) for r in episode_rewards] if episode_rewards is not None else None
+    )
+    metadata = {
+        "saved_at_unix": float(time.time()),
+        "artifact_tag": str(artifact_tag),
+        "env": str(getattr(args, "env", "")),
+        "seed": int(getattr(args, "seed", 0)),
+        "spec": getattr(args, "spec", None),
+        "dataset_class": dataset.__class__.__name__,
+        "schema_id": getattr(dataset, "schema_id", None),
+        "observation_dim": int(getattr(dataset, "observation_dim", 0) or 0),
+        "action_dim": int(getattr(dataset, "action_dim", 0) or 0),
+        "joined_dim": int(getattr(dataset, "joined_dim", 0) or 0),
+        "rows_per_seg": int(getattr(dataset, "rows_per_seg", 0) or 0),
+        "required_rows": int(getattr(dataset, "required_rows", 0) or 0),
+        "num_segments": int(len(dataset)),
+        "num_episodes": int(len(episodes_tokens)),
+        "episode_length_min": int(min(lengths)) if lengths else 0,
+        "episode_length_max": int(max(lengths)) if lengths else 0,
+        "episode_length_mean": float(np.mean(lengths)) if lengths else 0.0,
+        "episode_return_mean": float(np.mean(rewards_per_episode))
+        if rewards_per_episode
+        else None,
+        "episode_return_min": float(np.min(rewards_per_episode))
+        if rewards_per_episode
+        else None,
+        "episode_return_max": float(np.max(rewards_per_episode))
+        if rewards_per_episode
+        else None,
+        "dataset_config": {k: _to_jsonable(v) for k, v in vars(args).items()},
+        "paths": {
+            "npz": npz_path,
+            "meta_json": meta_path,
+        },
+    }
+    with open(meta_path, "w") as f:
+        json.dump(metadata, f, indent=2, sort_keys=True)
+
+    return {"npz_path": npz_path, "meta_path": meta_path}
 
 
 def build_product_dfa(dfas):
@@ -351,6 +473,10 @@ def train(args, return_state=False):
     FSM.USE_END_HACK = False
 
     dataset = build_dataset(args)
+    dataset_artifact = save_dataset_artifact(args, dataset, artifact_tag="dataset_train")
+    if dataset_artifact is not None:
+        print(f"Dataset artifact saved: {dataset_artifact['npz_path']}")
+        print(f"Dataset metadata saved: {dataset_artifact['meta_path']}")
 
     # Optional: replay a single dataset episode and exit.
     if getattr(args, "replay_dataset_episode", False):
@@ -389,8 +515,46 @@ def train(args, return_state=False):
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
     latest_ckpt_path = None
+    start_epoch = 0
 
-    for epoch in range(args.epochs):
+    if bool(getattr(args, "resume_from_latest_checkpoint", True)):
+        latest_epoch, latest_path = _find_latest_checkpoint(args.run_dir)
+        if latest_epoch is not None and latest_path is not None:
+            strict_resume = bool(getattr(args, "resume_strict_checkpoint", False))
+            try:
+                ckpt = torch.load(latest_path, map_location=device)
+                state_dict = ckpt.get("model_state_dict")
+                if state_dict is None:
+                    raise KeyError("model_state_dict not found in checkpoint")
+                model.load_state_dict(state_dict, strict=True)
+                opt_state = ckpt.get("optimizer_state_dict")
+                if opt_state is not None:
+                    opt.load_state_dict(opt_state)
+                    _optimizer_to_device(opt, device)
+                start_epoch = int(latest_epoch) + 1
+                latest_ckpt_path = latest_path
+                print(
+                    f"[resume] loaded checkpoint {latest_path} "
+                    f"(epoch={latest_epoch}); continuing from epoch {start_epoch}"
+                )
+            except Exception as exc:
+                if strict_resume:
+                    raise RuntimeError(
+                        f"Failed to resume from checkpoint {latest_path}: {exc}"
+                    ) from exc
+                print(
+                    f"[resume] warning: could not load checkpoint {latest_path}; "
+                    f"starting from scratch. reason={exc}"
+                )
+                start_epoch = 0
+
+    if start_epoch >= int(args.epochs):
+        print(
+            f"[resume] training already complete (start_epoch={start_epoch}, "
+            f"epochs={int(args.epochs)}); skipping train loop."
+        )
+
+    for epoch in range(start_epoch, args.epochs):
         model.train()
         total_loss = 0.0
         total_sup = 0.0
@@ -449,6 +613,8 @@ def train(args, return_state=False):
             torch.save(
                 {
                     "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": opt.state_dict(),
+                    "epoch": int(epoch),
                     "config": {
                         "vocab_size": adapter.num_token_ids - 1,
                         "block_size": args.block_size,
@@ -1261,9 +1427,53 @@ def get_arg_parser(add_help=True):
         help="Deprecated alias for --run_dir.",
     )
     p.add_argument(
+        "--save_generated_dataset",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Persist generated offline dataset to disk as NPZ + metadata JSON "
+            "(default: enabled)."
+        ),
+    )
+    p.add_argument(
+        "--dataset_artifact_dir",
+        type=str,
+        default=None,
+        help=(
+            "Directory for dataset artifacts. Default: <run_dir>/dataset_artifacts. "
+            "Use this to keep a central reusable dataset cache."
+        ),
+    )
+    p.add_argument(
+        "--dataset_artifact_name",
+        type=str,
+        default="dataset_snapshot",
+        help=(
+            "Base filename stem for dataset artifacts. "
+            "Files written: <stem>.npz and <stem>.meta.json."
+        ),
+    )
+    p.add_argument(
         "--no_eval_after_train",
         action="store_true",
         help="Skip post-training rollout evaluation (metrics fields remain null).",
+    )
+    p.add_argument(
+        "--resume_from_latest_checkpoint",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "If run_dir already has cb_state_<epoch>.pt checkpoints, resume from the latest "
+            "epoch instead of restarting from epoch 0 (default: enabled)."
+        ),
+    )
+    p.add_argument(
+        "--resume_strict_checkpoint",
+        action="store_true",
+        help=(
+            "Fail fast when checkpoint resume loading fails (shape/config mismatch). "
+            "By default, resume failures fall back to training from scratch."
+        ),
     )
     p.add_argument(
         "--eval_num_episodes",

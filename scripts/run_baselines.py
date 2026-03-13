@@ -30,6 +30,7 @@ from train_cb import (
     build_dataset,
     get_arg_parser,
     resolve_formulas,
+    save_dataset_artifact,
     train,
 )
 
@@ -87,6 +88,10 @@ def _run_dataset_overview(args):
     inspect_args.save_path = args.base_run_dir
     inspect_args.run_dir = args.base_run_dir
     dataset = build_dataset(inspect_args)
+    info = save_dataset_artifact(inspect_args, dataset, artifact_tag="dataset_overview")
+    if info is not None:
+        print(f"Dataset artifact saved to: {info['npz_path']}")
+        print(f"Dataset metadata saved to: {info['meta_path']}")
     adapter, _, raw_dfa = build_adapter_and_dfa(inspect_args, dataset)
     analyze_dataset(inspect_args, dataset, adapter, raw_dfa)
 

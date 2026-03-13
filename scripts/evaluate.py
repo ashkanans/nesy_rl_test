@@ -28,6 +28,7 @@ from train_cb import (
     build_model,
     get_arg_parser,
     resolve_formulas,
+    save_dataset_artifact,
     train,
 )
 
@@ -101,10 +102,16 @@ def main():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     set_global_seed(args.seed)
 
-    dataset = build_dataset(args)
-    adapter, _, raw_dfa = build_adapter_and_dfa(args, dataset)
-
     run_dir, run_id, ts = ensure_run_dir(args.env, run_dir=args.run_dir, base_dir=args.base_runs_dir)
+    args.run_dir = run_dir
+    args.save_path = run_dir
+
+    dataset = build_dataset(args)
+    info = save_dataset_artifact(args, dataset, artifact_tag="dataset_eval")
+    if info is not None:
+        print(f"Dataset artifact saved: {info['npz_path']}")
+        print(f"Dataset metadata saved: {info['meta_path']}")
+    adapter, _, raw_dfa = build_adapter_and_dfa(args, dataset)
 
     spec_name = spec_label_from_args(args)
     formulas = resolve_formulas(args, dataset=dataset)
