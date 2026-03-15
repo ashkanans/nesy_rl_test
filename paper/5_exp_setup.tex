@@ -1,69 +1,44 @@
 \section{Experimental Setup}
 
-\subsection{Benchmarks}
-\paragraph{FrozenLake.}
-We use FrozenLake as a controlled finite-state benchmark with hazard tiles (holes) and a goal tile. Configurations include deterministic and stochastic dynamics (via the slippery setting), multiple map sizes, and specification presets such as \texttt{avoid\_holes} and \texttt{reach\_goal\_while\_avoid\_holes}.
+\subsection{Benchmark and Run Scope}
+This version reports only the completed \textbf{ColourBomb (CB)} experiments available under \texttt{runs/cb}. We focus on the alpha-sensitivity blocks:
+\begin{itemize}
+\item \texttt{runs/cb/alpha\_sens\_avoid\_bombs\_greedy\_s\{0,1,2\}}
+\item \texttt{runs/cb/alpha\_sens\_reach\_goal\_while\_safe\_greedy\_s\{0,1,2\}}
+\end{itemize}
 
-\paragraph{ColourBomb.}
-ColourBomb is a custom interpretable safety environment with bomb cells (hazards) and goal regions. We use multiple layouts (including bottleneck hazard configurations) to create reward-safety conflict and evaluate invariant, reach-while-safe, and memory-like/response-style specifications.
+CB is a gridworld with bombs (hazards), walls (blocked cells), start state, and multiple terminal goal cells. Episodes are finite-horizon, with per-step penalty, positive terminal goal reward, and negative terminal bomb reward.
 
-\paragraph{NRM Navigation.}
-NRM navigation provides a safety-centric navigation benchmark with explicit unsafe cells and goal-directed tasks. We evaluate invariant and reach-while-safe presets, and include response/bounded variants when available in the specification suite.
-
-\subsection{Specification Presets}
-We use environment-specific named specification presets to ensure consistency and reproducibility. Example presets are shown in Table~\ref{tab:spec_presets}. The evaluation suite includes invariants, reachability, reach-while-safe, and response-like formulas (environment dependent). DFA summaries and graph exports are generated for all compiled presets.
-
-\begin{table}[t]
-\caption{Representative specification presets used in the benchmark suite.}
-\label{tab:spec_presets}
+\begin{figure}[t]
 \centering
-\small
-\begin{tabular}{llll}
-\toprule
-Environment & Preset name & Formula (schematic) & Category \\
-\midrule
-FrozenLake & \texttt{avoid\_holes} & $G(\neg \texttt{hole})$ & Invariant safety \\
-FrozenLake & \texttt{reach\_goal} & $F(\texttt{goal})$ & Reachability \\
-FrozenLake & \texttt{reach\_goal\_while\_avoid\_holes} & $G(\neg \texttt{hole}) \wedge F(\texttt{goal})$ & Reach-while-safe \\
-ColourBomb & \texttt{avoid\_bomb} & $G(\neg \texttt{bomb})$ & Invariant safety \\
-ColourBomb & \texttt{reach\_goal\_while\_avoid\_bomb} & $G(\neg \texttt{bomb}) \wedge F(\texttt{goal})$ & Reach-while-safe \\
-ColourBomb & \texttt{response\_bomb\_escape} & $G(\texttt{near\_bomb}\rightarrow F(\neg \texttt{near\_bomb}))$ & Response-like \\
-NRM nav & \texttt{avoid\_unsafe} & $G(\neg \texttt{unsafe})$ & Invariant safety \\
-NRM nav & \texttt{reach\_goal\_while\_avoid\_unsafe} & $G(\neg \texttt{unsafe}) \wedge F(\texttt{goal})$ & Reach-while-safe \\
-\bottomrule
-\end{tabular}
-\end{table}
+\includegraphics[width=0.72\linewidth]{figures/colourbomb/cb_environment_layout.png}
+\caption{ColourBomb environment structure. Bomb cells are hazards, walls are non-traversable, and reaching any goal terminal ends the episode.}
+\label{fig:cb_env_layout}
+\end{figure}
 
-\subsection{Methods Compared}
-\paragraph{TT family.}
+\subsection{Specifications}
+We evaluate two named presets that are available in the executed runs:
 \begin{itemize}
-\item TT vanilla (\texttt{alpha=0.0})
-\item TT logic-regularized / LTF-style (\texttt{alpha>0}; swept)
-\item TT DFA composition modes: \texttt{single}, \texttt{product}, \texttt{multi}
-\item TT decoding modes: \texttt{greedy}, \texttt{beam}, \texttt{constrained\_beam} (with hard pruning and/or satisfaction reranking)
+\item \texttt{avoid\_bombs}: invariant safety ($G(\neg \texttt{bomb})$)
+\item \texttt{reach\_goal\_while\_safe}: reachability with safety ($F(\texttt{goal}) \wedge G(\neg \texttt{bomb})$)
 \end{itemize}
 
-\paragraph{DT family.}
+\subsection{Methods and Hyperparameters}
+We compare TT variants with greedy decoding:
 \begin{itemize}
-\item DT vanilla (greedy inference)
-\item DT-LTF-1 (training-time logic regularization)
-\item DT-LTF-2 (constrained test-time action selection)
-\item DT-LTF-3 (offline kNN suffix continuation planner)
-\item Random policy baseline (reference in DT evaluations)
+\item \textbf{Vanilla TT}: \texttt{alpha=0.0}
+\item \textbf{Logic-regularized TT}: \texttt{alpha} in $\{0.01, 0.05, 0.1, 0.2, 0.4\}$
 \end{itemize}
+All reported values are aggregated over seeds $\{0,1,2\}$ from the completed runs.
 
-\subsection{Metrics}
-We report:
+\subsection{Metrics and Aggregation}
+For each run directory we read \texttt{baseline\_metrics.csv}. Primary metrics are:
+\texttt{return\_mean}, \texttt{satisfaction\_rate}, \texttt{violation\_rate}, \texttt{goal\_rate}, and \texttt{bomb\_hit\_rate}.
+We then aggregate by (spec, baseline) using mean and standard deviation across the three seeds.
+
+To ensure reproducibility of figures/tables in this section, we provide a deterministic post-processing script: \texttt{build\_cb\_figures.py} (under \texttt{paper/scripts}).
+It writes:
 \begin{itemize}
-\item \textbf{Return} (\texttt{return\_mean}): mean episodic reward.
-\item \textbf{Violation rate} (\texttt{violation\_rate}): reported in standardized form, with episode-level and step-level variants where available.
-\item \textbf{Hard LTLf satisfaction rate} (\texttt{satisfaction\_rate}): fraction of episodes accepted by the compiled DFA under canonical finite-trace semantics.
-\item \textbf{Soft satisfaction score} (\texttt{satisfaction\_soft\_mean}): mean acceptance probability from the soft DFA evaluator.
-\item \textbf{Environment-specific indicators}: e.g., \texttt{goal\_rate}, \texttt{hazard\_hit\_rate}, \texttt{bomb\_hit\_rate}.
-\item \textbf{Runtime} (\texttt{runtime\_sec}) for training/evaluation components and planning modes.
+\item seed-level and aggregated CSVs under \texttt{paper/tables/colourbomb}
+\item figure PNGs under \texttt{paper/figures/colourbomb}
 \end{itemize}
-All primary results are computed on executed rollouts; decoded prefixes are used for action selection only.
-
-\subsection{Evaluation Protocol}
-We use fixed seed lists within each comparison block and keep environment configuration, checkpoint, and evaluation budget identical across methods. Suite evaluation aggregates per-spec metrics into machine-readable tables and plots. Sweep experiments report full summaries, Pareto points, and heatmaps for parameter sensitivity.
-
