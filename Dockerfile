@@ -76,5 +76,9 @@ ENV PYTHONPATH=/workspace/nesy_rl:${PYTHONPATH}
 
 RUN chown -R ${USERNAME}:${USERNAME} /opt/venv-torch /opt/venv-jax
 
+COPY docker/ensure_venvs_entrypoint.sh /usr/local/bin/ensure_venvs_entrypoint.sh
+RUN chmod +x /usr/local/bin/ensure_venvs_entrypoint.sh
+
 USER ${USERNAME}
+ENTRYPOINT ["/usr/local/bin/ensure_venvs_entrypoint.sh"]
 CMD ["/bin/bash"]
