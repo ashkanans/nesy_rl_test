@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: dev
+      args:
+        INSTALL_JAX: ${INSTALL_JAX:-1}
     image: nesy-rl:latest
     container_name: nesy-rl
     shm_size: "16g"
@@ -14,6 +17,12 @@ services:
       NVIDIA_VISIBLE_DEVICES: "all"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
       PYTHONUNBUFFERED: "1"
+      AUTO_START_TELEGRAM_CB_HOURLY: ${AUTO_START_TELEGRAM_CB_HOURLY:-1}
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+      TELEGRAM_PHONE: ${TELEGRAM_PHONE:-}
+      TELEGRAM_GROUP_ID: ${TELEGRAM_GROUP_ID:-}
+      TELEGRAM_CB_HOURLY_INTERVAL_SEC: ${TELEGRAM_CB_HOURLY_INTERVAL_SEC:-3600}
     volumes:
       - .:/workspace/nesy_rl:rw
     working_dir: /workspace/nesy_rl
