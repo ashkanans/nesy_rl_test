@@ -466,10 +466,18 @@ def evaluate_policy_rollouts(
     episode_violations = []
     episode_goal_hits = []
     episode_hazard_hits = []
+    episode_target_hazard_hits = []
     step_violations = 0
+    step_target_violations = 0
     step_count = 0
     reject_sink_entries = 0
     fallback_decodes = 0
+
+    target_bomb_state = None
+    if env_name == "cb" and isinstance(spec_name, str) and spec_name.startswith("avoid_single_bomb_"):
+        tail = spec_name[len("avoid_single_bomb_") :]
+        if tail.isdigit():
+            target_bomb_state = int(tail)
 
     deep_dfa = None
     if not isinstance(raw_dfa, (list, tuple)):
@@ -501,6 +509,7 @@ def evaluate_policy_rollouts(
             done = False
             ep_goal = False
             ep_hazard = False
+            ep_target_hazard = False
 
             while not done and ep_len < int(max_steps):
                 action, decode_info = _decode_action(
@@ -523,6 +532,8 @@ def evaluate_policy_rollouts(
                 unsafe_hit = _is_unsafe_state(env_name, env, int(next_obs))
                 if unsafe_hit:
                     step_violations += 1
+                if target_bomb_state is not None and int(next_obs) == target_bomb_state:
+                    step_target_violations += 1
 
                 terminal_type = info.get("terminal_type")
                 if env_name == "nrm_nav":
@@ -556,6 +567,8 @@ def evaluate_policy_rollouts(
                         ep_goal = True
                     if terminal_type == "B":
                         ep_hazard = True
+                    if target_bomb_state is not None and int(next_obs) == target_bomb_state:
+                        ep_target_hazard = True
                 elif env_name == "nrm_nav":
                     if terminal_type == "G":
                         ep_goal = True
@@ -599,14 +612,25 @@ def evaluate_policy_rollouts(
             episode_violations.append(float(episode_violation))
             episode_goal_hits.append(1.0 if ep_goal else 0.0)
             episode_hazard_hits.append(1.0 if ep_hazard else 0.0)
+            episode_target_hazard_hits.append(1.0 if ep_target_hazard else 0.0)
 
     return_mean = float(np.mean(episode_returns)) if episode_returns else None
     return_std = float(np.std(episode_returns)) if episode_returns else None
     satisfaction_rate = float(np.mean(episode_sats)) if episode_sats else None
     violation_rate_episode = float(np.mean(episode_violations)) if episode_violations else None
     violation_rate_step = float(step_violations / step_count) if step_count > 0 else None
+    violation_rate_step_target = (
+        float(step_target_violations / step_count)
+        if (step_count > 0 and target_bomb_state is not None)
+        else None
+    )
     goal_rate = float(np.mean(episode_goal_hits)) if episode_goal_hits else None
     hazard_hit_rate = float(np.mean(episode_hazard_hits)) if episode_hazard_hits else None
+    target_hazard_hit_rate = (
+        float(np.mean(episode_target_hazard_hits))
+        if (episode_target_hazard_hits and target_bomb_state is not None)
+        else None
+    )
 
     metrics = {
         "return_mean": return_mean,
@@ -621,9 +645,12 @@ def evaluate_policy_rollouts(
         "satisfaction_soft_mean": float(np.mean(soft_sats)) if soft_sats else None,
         "violation_rate_episode": violation_rate_episode,
         "violation_rate_step": violation_rate_step,
+        "violation_rate_step_target": violation_rate_step_target,
         "goal_rate": goal_rate,
         "bomb_hit_rate": hazard_hit_rate if env_name == "cb" else None,
         "hazard_hit_rate": hazard_hit_rate,
+        "target_bomb22_hit_rate": target_hazard_hit_rate if target_bomb_state == 22 else None,
+        "target_hazard_hit_rate": target_hazard_hit_rate,
         "decoding_mode": decoding_cfg.mode,
         "beam_width": int(decoding_cfg.beam_width),
         "target_shift": decoding_cfg.target_shift,
@@ -652,6 +679,9 @@ def evaluate_policy_rollouts(
         "episode_satisfaction": episode_sats,
         "episode_goal_hits": episode_goal_hits,
         "episode_hazard_hits": episode_hazard_hits,
+        "episode_target_hazard_hits": episode_target_hazard_hits,
+        "target_hazard_state": target_bomb_state,
+        "step_target_violations": int(step_target_violations),
     }
 
     return metrics, rollout_stats

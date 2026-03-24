@@ -48,6 +48,7 @@ class CBSequenceDataset(Dataset):
         policy_mix_spec="random:1.0",
         policy_mix_sampling="fixed",
         policy_mix_normal_spec=None,
+        policy_mix_normal_mean_mode="base",
         state_semantics="post",
         longest_path_max_expansions=500000,
     ):
@@ -59,12 +60,17 @@ class CBSequenceDataset(Dataset):
         self.policy_mix_normal_spec = (
             None if policy_mix_normal_spec is None else str(policy_mix_normal_spec)
         )
+        self.policy_mix_normal_mean_mode = str(policy_mix_normal_mean_mode)
         self.state_semantics = str(state_semantics)
         self.longest_path_max_expansions = int(longest_path_max_expansions)
         if self.target_shift not in {"token", "transition"}:
             raise ValueError("target_shift must be 'token' or 'transition'.")
         if self.policy_mix_sampling not in {"fixed", "normal"}:
             raise ValueError("policy_mix_sampling must be 'fixed' or 'normal'.")
+        if self.policy_mix_normal_mean_mode not in {"base", "absolute", "delta"}:
+            raise ValueError(
+                "policy_mix_normal_mean_mode must be one of: 'base', 'absolute', 'delta'."
+            )
         if self.state_semantics not in {"pre", "post"}:
             raise ValueError("state_semantics must be 'pre' or 'post'.")
         self.token_schema = get_schema_for_env("cb")
@@ -84,7 +90,10 @@ class CBSequenceDataset(Dataset):
         self.policy_mix_names = mix_names
         self.policy_mix_probs = mix_probs
         self.policy_mix_normal_params = _parse_policy_mix_normal_spec(
-            self.policy_mix_normal_spec, self.policy_mix_names, self.policy_mix_probs
+            self.policy_mix_normal_spec,
+            self.policy_mix_names,
+            self.policy_mix_probs,
+            mean_mode=self.policy_mix_normal_mean_mode,
         )
         self.shortest_safe_policy = compute_cb_shortest_safe_policy(self.env, avoid_bombs=True)
         self.shortest_any_policy = compute_cb_shortest_safe_policy(self.env, avoid_bombs=False)
@@ -246,12 +255,22 @@ def _parse_policy_mix_spec(spec: str):
     return names, probs
 
 
-def _parse_policy_mix_normal_spec(spec, names, base_probs):
+def _parse_policy_mix_normal_spec(spec, names, base_probs, mean_mode="base"):
     """
     Parse optional per-policy normal params:
       random:0.6:0.1,shortest_safe:0.3:0.08,longest_safe:0.1:0.05
-    Missing policies fall back to mean=base_prob, std=0.05.
+
+    mean_mode:
+      - base (default): keep mix-spec proportions as means; use normal-spec only for std.
+      - absolute: use provided means directly (legacy behavior).
+      - delta: treat provided means as additive delta over base mix means.
+
+    Missing policies always fall back to mean=base_prob, std=0.05.
     """
+    if mean_mode not in {"base", "absolute", "delta"}:
+        raise ValueError("mean_mode must be one of {'base','absolute','delta'}.")
+
+    base_map = {str(n): float(p) for n, p in zip(names, base_probs)}
     params = {str(n): (float(p), 0.05) for n, p in zip(names, base_probs)}
     if spec is None:
         return params
@@ -270,10 +289,17 @@ def _parse_policy_mix_normal_spec(spec, names, base_probs):
             # Allow superset normal-spec configs across multiple runs/mixes.
             # Unknown names are ignored for this dataset instance.
             continue
-        mean = float(mean_s)
+        mean_raw = float(mean_s)
         std = float(std_s)
         if std < 0.0:
             raise ValueError("Normal std must be non-negative.")
+        if mean_mode == "absolute":
+            mean = mean_raw
+        elif mean_mode == "delta":
+            mean = float(base_map[name]) + mean_raw
+        else:
+            # "base": preserve mix-spec mean; only std is overridden.
+            mean = float(base_map[name])
         params[name] = (mean, std)
     return params
 

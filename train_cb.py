@@ -412,6 +412,7 @@ def build_dataset(args):
             policy_mix_spec=getattr(args, "cb_policy_mix_spec", "random:1.0"),
             policy_mix_sampling=getattr(args, "cb_policy_mix_sampling", "fixed"),
             policy_mix_normal_spec=getattr(args, "cb_policy_mix_normal_spec", None),
+            policy_mix_normal_mean_mode=getattr(args, "cb_policy_mix_normal_mean_mode", "base"),
             state_semantics=getattr(args, "cb_state_semantics", "post"),
             longest_path_max_expansions=getattr(args, "cb_longest_path_max_expansions", 500000),
         )
@@ -662,6 +663,8 @@ def train(args, return_state=False):
             "goal_rate": None,
             "bomb_hit_rate": None,
             "hazard_hit_rate": None,
+            "target_bomb22_hit_rate": None,
+            "target_hazard_hit_rate": None,
             "decoding_mode": None,
             "beam_width": None,
             "model_type": "tt",
@@ -1213,6 +1216,18 @@ def get_arg_parser(add_help=True):
             "Optional per-policy normal parameters for --cb_policy_mix_sampling normal. "
             "Format: name:mean:std[,name:mean:std...]. "
             "Example: random:0.7:0.1,shortest_safe:0.2:0.08,longest_safe:0.1:0.05"
+        ),
+    )
+    p.add_argument(
+        "--cb_policy_mix_normal_mean_mode",
+        type=str,
+        choices=["base", "absolute", "delta"],
+        default="base",
+        help=(
+            "How to interpret means in --cb_policy_mix_normal_spec when sampling=normal: "
+            "'base' keeps means equal to --cb_policy_mix_spec probabilities (recommended), "
+            "'absolute' uses provided means directly (legacy), "
+            "'delta' treats provided means as additive offsets over base mix probabilities."
         ),
     )
     p.add_argument(

@@ -4,6 +4,7 @@ import re
 import torch
 import contextlib
 import io
+from pathlib import Path
 from graphviz import Source
 from pythomata import SimpleDFA
 from pythomata import SymbolicAutomaton
@@ -289,8 +290,7 @@ class DFA:
             # keep going even if rendering fails (e.g., on headless systems)
             pass
 
-        # Make sure the directory exists
-        os.makedirs("simpleDFAs", exist_ok=True)
+        # Best-effort DOT export (should never crash training/eval because of permissions).
         self.write_dot_file("simpleDFAs/{}.dot".format(formula_name))
 
         if USE_END_HACK:
@@ -443,23 +443,70 @@ class DFA:
         return automaton
 
     def write_dot_file(self, file_name):
-        with open(file_name, "w") as f:
-            f.write(
-                'digraph MONA_DFA {\nrankdir = LR;\ncenter = true;\nsize = "7.5,10.5";\nedge [fontname = Courier];\nnode [height = .5, width = .5];\nnode [shape = doublecircle];'
-            )
-            for i, rew in enumerate(self.acceptance):
-                if rew:
-                    f.write(str(i) + ";")
-            f.write('\nnode [shape = circle]; 0;\ninit [shape = plaintext, label = ""];\ninit -> 0;\n')
+        """
+        Best-effort DOT writer.
 
-            for s in range(self.num_of_states):
-                for a in range(self.num_of_symbols):
-                    s_prime = self.transitions[s][a]
-                    f.write('{} -> {} [label="{}"];\n'.format(s, s_prime, self.dictionary_symbols[a]))
-            f.write("}\n")
+        Historically this wrote to repo-relative simpleDFAs/*.dot and could abort
+        experiments when that directory was not writable inside containers.
+        We now gracefully fallback to a writable tmp path and never raise.
+        """
 
-        s = Source.from_file(file_name)
-        # s.view()
+        def _candidate_paths(path_str):
+            # 1) caller-provided relative/absolute path
+            p0 = Path(path_str)
+            candidates = [p0]
+            # 2) optional override directory for all DFA dot exports
+            dot_dir = os.environ.get("NESY_RL_DFA_DOT_DIR", "").strip()
+            if dot_dir:
+                candidates.append(Path(dot_dir) / p0.name)
+            # 3) robust tmp fallback
+            candidates.append(Path("/tmp/nesy_rl/simpleDFAs") / p0.name)
+            # unique while preserving order
+            out = []
+            seen = set()
+            for p in candidates:
+                key = str(p)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(p)
+            return out
+
+        out_path = None
+        for cand in _candidate_paths(file_name):
+            try:
+                cand.parent.mkdir(parents=True, exist_ok=True)
+                out_path = cand
+                break
+            except Exception:
+                continue
+
+        if out_path is None:
+            return
+
+        try:
+            with open(out_path, "w") as f:
+                f.write(
+                    'digraph MONA_DFA {\nrankdir = LR;\ncenter = true;\nsize = "7.5,10.5";\nedge [fontname = Courier];\nnode [height = .5, width = .5];\nnode [shape = doublecircle];'
+                )
+                for i, rew in enumerate(self.acceptance):
+                    if rew:
+                        f.write(str(i) + ";")
+                f.write('\nnode [shape = circle]; 0;\ninit [shape = plaintext, label = ""];\ninit -> 0;\n')
+
+                for s in range(self.num_of_states):
+                    for a in range(self.num_of_symbols):
+                        s_prime = self.transitions[s][a]
+                        f.write('{} -> {} [label="{}"];\n'.format(s, s_prime, self.dictionary_symbols[a]))
+                f.write("}\n")
+        except Exception:
+            return
+
+        try:
+            s = Source.from_file(str(out_path))
+            # s.view()
+        except Exception:
+            pass
 
     def return_deep_dfa(self):
         ego_dfa = DeepDFA(self.num_of_symbols, self.num_of_states, 2).to(device)
