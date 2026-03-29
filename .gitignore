@@ -91,3 +91,6 @@ paper/*.out
 paper/*.pdf
 paper/*.synctex.gz
 paper/*.toc
+
+# Vendored reference repo (not used in this project runtime)
+decision-transformer/
