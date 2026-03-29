@@ -23,6 +23,7 @@ from planning.dt_runtime import (
     dt_metrics_template,
     evaluate_dt_policy,
     evaluate_random_policy,
+    save_dt_dataset_artifact,
     write_metrics_files,
     write_skip_metrics,
 )
@@ -166,6 +167,11 @@ def main():
         )
         print(f"DT eval skipped: {skip_reason}")
         return
+
+    dataset_artifact = save_dt_dataset_artifact(args, base_dataset, artifact_tag="dataset_eval")
+    if dataset_artifact is not None:
+        print(f"Dataset artifact saved: {dataset_artifact['npz_path']}")
+        print(f"Dataset metadata saved: {dataset_artifact['meta_path']}")
 
     has_formula_source = (
         args.spec is not None or args.ltl_formula is not None or args.ltl_formulas is not None

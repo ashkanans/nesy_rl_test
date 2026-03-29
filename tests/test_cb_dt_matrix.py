@@ -84,3 +84,18 @@ def test_cb_dt_matrix_dry_run_smoke_writes_manifest_and_summary(tmp_path):
         / "baseline_metrics.csv"
     )
     assert mode_csv.exists()
+
+    train_log = (
+        out_dir
+        / "spec_avoid_single_bomb_22"
+        / "mix_random_0.7_shortest_safe_0.3"
+        / "seed_0"
+        / "train_shared"
+        / "vanilla"
+        / "console.log"
+    )
+    assert train_log.exists()
+    train_text = train_log.read_text()
+    assert "--save_generated_dataset" in train_text
+    assert "--dataset_artifact_dir" in train_text
+    assert "--dataset_artifact_name" in train_text

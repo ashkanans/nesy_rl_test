@@ -26,6 +26,7 @@ from planning.dt_runtime import (
     dt_metrics_template,
     evaluate_dt_policy,
     hazard_mask_for_env,
+    save_dt_dataset_artifact,
     write_metrics_files,
     write_skip_metrics,
 )
@@ -95,6 +96,33 @@ def get_arg_parser(add_help=True):
 
     p.add_argument("--run_dir", type=str, default=None)
     p.add_argument("--base_runs_dir", type=str, default="runs")
+    p.add_argument(
+        "--save_generated_dataset",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Persist generated offline dataset to disk as NPZ + metadata JSON "
+            "(default: enabled)."
+        ),
+    )
+    p.add_argument(
+        "--dataset_artifact_dir",
+        type=str,
+        default=None,
+        help=(
+            "Directory for dataset artifacts. Default: <run_dir>/dataset_artifacts. "
+            "Use this to keep a central reusable dataset cache."
+        ),
+    )
+    p.add_argument(
+        "--dataset_artifact_name",
+        type=str,
+        default="dataset_snapshot",
+        help=(
+            "Base filename stem for dataset artifacts. "
+            "Files written: <stem>.npz and <stem>.meta.json."
+        ),
+    )
     return p
 
 
@@ -122,6 +150,11 @@ def train(args):
         )
         print(f"DT training skipped: {skip_reason}")
         return None, None, run_dir
+
+    dataset_artifact = save_dt_dataset_artifact(args, base_dataset, artifact_tag="dataset_train")
+    if dataset_artifact is not None:
+        print(f"Dataset artifact saved: {dataset_artifact['npz_path']}")
+        print(f"Dataset metadata saved: {dataset_artifact['meta_path']}")
 
     dt_dataset = build_dt_dataset(base_dataset, context_len=args.context_len)
     if len(dt_dataset) == 0:

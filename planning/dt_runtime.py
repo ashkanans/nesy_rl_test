@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import csv
+import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,6 +37,106 @@ class DTConstrainedConfig:
     knn_k: int = 16
     knn_return_weight: float = 1.0
     knn_satisfaction_weight: float = 2.0
+
+
+def _to_jsonable(value):
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+    return str(value)
+
+
+def _to_object_array(items):
+    arr = np.empty(len(items), dtype=object)
+    for i, item in enumerate(items):
+        arr[i] = np.asarray(item)
+    return arr
+
+
+def save_dt_dataset_artifact(args, dataset, artifact_tag: str = "dataset_snapshot"):
+    """
+    Persist generated DT offline dataset as NPZ + metadata JSON.
+    """
+    if not bool(getattr(args, "save_generated_dataset", True)):
+        return None
+
+    base_dir = getattr(args, "dataset_artifact_dir", None)
+    if not base_dir:
+        run_root = getattr(args, "run_dir", None)
+        if run_root is None:
+            run_root = os.path.join(getattr(args, "base_runs_dir", "runs"), "dataset_artifacts")
+        base_dir = os.path.join(str(run_root), "dataset_artifacts")
+    os.makedirs(base_dir, exist_ok=True)
+
+    stem = str(getattr(args, "dataset_artifact_name", None) or artifact_tag).strip()
+    if stem.lower().endswith(".npz"):
+        stem = stem[:-4]
+    if not stem:
+        stem = "dataset_snapshot"
+
+    npz_path = os.path.join(base_dir, f"{stem}.npz")
+    meta_path = os.path.join(base_dir, f"{stem}.meta.json")
+
+    episodes_tokens = list(getattr(dataset, "episodes_tokens", []) or [])
+    episode_rewards = getattr(dataset, "episode_rewards", None)
+    episode_policy_labels = getattr(dataset, "episode_policy_labels", None)
+    indices = getattr(dataset, "indices", None)
+
+    payload = {
+        "episodes_tokens": _to_object_array(episodes_tokens),
+    }
+    if episode_rewards is not None:
+        payload["episode_rewards"] = _to_object_array(list(episode_rewards))
+    if episode_policy_labels is not None:
+        payload["episode_policy_labels"] = np.asarray(list(episode_policy_labels), dtype=object)
+    if indices is not None:
+        payload["indices"] = np.asarray(list(indices), dtype=np.int64)
+    np.savez_compressed(npz_path, **payload)
+
+    lengths = [int(np.asarray(ep).shape[0]) for ep in episodes_tokens]
+    rewards_per_episode = (
+        [float(np.asarray(r).sum()) for r in episode_rewards] if episode_rewards is not None else None
+    )
+    metadata = {
+        "saved_at_unix": float(time.time()),
+        "artifact_tag": str(artifact_tag),
+        "env": str(getattr(args, "env", "")),
+        "seed": int(getattr(args, "seed", 0)),
+        "spec": getattr(args, "spec", None),
+        "dataset_class": dataset.__class__.__name__,
+        "schema_id": getattr(dataset, "schema_id", None),
+        "observation_dim": int(getattr(dataset, "observation_dim", 0) or 0),
+        "action_dim": int(getattr(dataset, "action_dim", 0) or 0),
+        "joined_dim": int(getattr(dataset, "joined_dim", 0) or 0),
+        "rows_per_seg": int(getattr(dataset, "rows_per_seg", 0) or 0),
+        "required_rows": int(getattr(dataset, "required_rows", 0) or 0),
+        "num_segments": int(len(dataset)),
+        "num_episodes": int(len(episodes_tokens)),
+        "episode_length_min": int(min(lengths)) if lengths else 0,
+        "episode_length_max": int(max(lengths)) if lengths else 0,
+        "episode_length_mean": float(np.mean(lengths)) if lengths else 0.0,
+        "episode_return_mean": float(np.mean(rewards_per_episode))
+        if rewards_per_episode
+        else None,
+        "episode_return_min": float(np.min(rewards_per_episode))
+        if rewards_per_episode
+        else None,
+        "episode_return_max": float(np.max(rewards_per_episode))
+        if rewards_per_episode
+        else None,
+        "dataset_config": {k: _to_jsonable(v) for k, v in vars(args).items()},
+        "paths": {
+            "npz": npz_path,
+            "meta_json": meta_path,
+        },
+    }
+    with open(meta_path, "w") as f:
+        json.dump(metadata, f, indent=2, sort_keys=True)
+
+    return {"npz_path": npz_path, "meta_path": meta_path}
 
 
 def apply_smoke_mode_dt(args):

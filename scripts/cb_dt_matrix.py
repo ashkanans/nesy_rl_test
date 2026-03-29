@@ -89,6 +89,26 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-zA-Z0-9._-]+", "_", str(text)).strip("_")
 
 
+def _cmd_arg(cmd: list[str], flag: str, default: str | None = None) -> str | None:
+    value = default
+    i = 0
+    while i < len(cmd):
+        if cmd[i] == flag and i + 1 < len(cmd):
+            value = cmd[i + 1]
+            i += 2
+            continue
+        i += 1
+    return value
+
+
+def _build_seed_dataset_artifact_name(job: Job, cfg: WorkerConfig) -> str:
+    # Keep dataset cache stable per seed+mix+semantics so repeated runs reuse same artifact.
+    state_semantics = _cmd_arg(cfg.train_cmd_common, "--cb_state_semantics", "post") or "post"
+    base_name = _cmd_arg(cfg.extra_args, "--dataset_artifact_name", "dataset_snapshot") or "dataset_snapshot"
+    mix_slug = _slug(job.policy_mix_spec) or "mix"
+    return _slug(f"{base_name}_{state_semantics}_{mix_slug}_seed{int(job.seed)}")
+
+
 def _write_json(path: str, payload: dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
@@ -362,6 +382,19 @@ def _train_baselines(job: Job, cfg: WorkerConfig) -> tuple[str, str | None]:
             ]
         )
         cmd.extend(cfg.extra_args)
+        # Save one stable dataset artifact per seed (and policy-mix/semantics).
+        # Skip redundant saves once the shared artifact already exists.
+        artifact_name = _build_seed_dataset_artifact_name(job, cfg)
+        artifact_dir = os.path.join(job.seed_root, "dataset_artifacts")
+        artifact_npz = os.path.join(artifact_dir, f"{artifact_name}.npz")
+        artifact_meta = os.path.join(artifact_dir, f"{artifact_name}.meta.json")
+        if "--no-save_generated_dataset" not in cfg.extra_args:
+            if os.path.exists(artifact_npz) and os.path.exists(artifact_meta):
+                cmd.append("--no-save_generated_dataset")
+            else:
+                cmd.extend(["--save_generated_dataset"])
+                cmd.extend(["--dataset_artifact_dir", artifact_dir])
+                cmd.extend(["--dataset_artifact_name", artifact_name])
         rc, cmd_str = _run_subprocess(
             cmd, log_path=train_log, gpu_id=cfg.gpu_id, dry_run=cfg.dry_run, log_prefix=f"train:{baseline}"
         )
@@ -421,6 +454,9 @@ def _evaluate_mode(job: Job, cfg: WorkerConfig, mode: str) -> tuple[str, dict[st
             ]
         )
         eval_cmd.extend(cfg.extra_args)
+        # Eval can run many times per seed (baseline x decoding mode); avoid dataset clobber spam.
+        if "--save_generated_dataset" not in cfg.extra_args:
+            eval_cmd.append("--no-save_generated_dataset")
 
         eval_log = os.path.join(baseline_dir, "console.log")
         rc, _ = _run_subprocess(
