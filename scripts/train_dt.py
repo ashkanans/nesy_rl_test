@@ -70,6 +70,17 @@ def get_arg_parser(add_help=True):
     p.add_argument("--eval_max_steps", type=int, default=None)
 
     p.add_argument("--stochastic", action="store_true", help="Enable stochastic transitions for cb dataset.")
+    p.add_argument("--cb_policy_mix_spec", type=str, default="random:1.0")
+    p.add_argument("--cb_policy_mix_sampling", type=str, choices=["fixed", "normal"], default="fixed")
+    p.add_argument("--cb_policy_mix_normal_spec", type=str, default=None)
+    p.add_argument(
+        "--cb_policy_mix_normal_mean_mode",
+        type=str,
+        choices=["base", "absolute", "delta"],
+        default="base",
+    )
+    p.add_argument("--cb_state_semantics", type=str, choices=["pre", "post"], default="post")
+    p.add_argument("--cb_longest_path_max_expansions", type=int, default=500000)
     p.add_argument("--frozenlake_map_size", type=str, choices=["4x4", "8x8"], default="4x4")
     p.add_argument("--frozenlake_is_slippery", action="store_true")
     p.add_argument("--policy_mix", type=float, default=0.0)

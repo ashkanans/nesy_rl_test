@@ -78,6 +78,12 @@ def build_dt_offline_source(args):
             sequence_length=max(8, args.context_len * 4),
             stochastic=getattr(args, "stochastic", False),
             seed=args.seed,
+            policy_mix_spec=getattr(args, "cb_policy_mix_spec", "random:1.0"),
+            policy_mix_sampling=getattr(args, "cb_policy_mix_sampling", "fixed"),
+            policy_mix_normal_spec=getattr(args, "cb_policy_mix_normal_spec", None),
+            policy_mix_normal_mean_mode=getattr(args, "cb_policy_mix_normal_mean_mode", "base"),
+            state_semantics=getattr(args, "cb_state_semantics", "post"),
+            longest_path_max_expansions=getattr(args, "cb_longest_path_max_expansions", 500000),
         )
         return dataset, None
     if args.env == "frozenlake":

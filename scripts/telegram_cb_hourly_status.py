@@ -19,7 +19,9 @@ class ProcRow:
     cmd: str
 
 
-_ENTRY_RE = re.compile(r"python .*scripts/(cb_tt_matrix|run_baselines|evaluate|train)\.py")
+_ENTRY_RE = re.compile(
+    r"python .*scripts/(cb_tt_matrix|cb_dt_matrix|run_baselines|evaluate|train|train_dt|eval_dt)\.py"
+)
 
 
 def _run(cmd: list[str], timeout: int = 8) -> tuple[int, str, str]:
@@ -132,17 +134,19 @@ def _format_cb_lines(rows: list[ProcRow]) -> str:
         script = Path(script_tok).name
 
         env = _get_arg(tokens, "--env", "")
-        if script != "cb_tt_matrix.py" and env != "cb":
+        if script not in {"cb_tt_matrix.py", "cb_dt_matrix.py"} and env != "cb":
             continue
 
         semantics = (_get_arg(tokens, "--cb_state_semantics", "pre") or "pre").upper()
         spec = _get_arg(tokens, "--spec", "-") or "-"
         seed = _get_arg(tokens, "--seed", "-") or "-"
         mode = _get_arg(tokens, "--decoding_mode", "-") or "-"
+        if mode == "-":
+            mode = _get_arg(tokens, "--dt_mode", "-") or "-"
         alpha = _get_arg(tokens, "--alpha", "-") or "-"
         phase = "unknown"
 
-        if script == "cb_tt_matrix.py":
+        if script in {"cb_tt_matrix.py", "cb_dt_matrix.py"}:
             alphas = _get_multi(tokens, "--alphas")
             alpha = f"sweep({','.join(alphas)})" if alphas else "-"
             phase = "orchestrator"
@@ -170,10 +174,24 @@ def _format_cb_lines(rows: list[ProcRow]) -> str:
                 m = re.search(r"/logic_alpha([^/]+)/", ckpt)
                 if m is not None:
                     alpha = m.group(1)
+        elif script == "eval_dt.py":
+            phase = "evaluation"
+            ckpt = _get_arg(tokens, "--checkpoint", "") or ""
+            if "/vanilla/" in ckpt:
+                alpha = "0.0"
+            else:
+                m = re.search(r"/logic_alpha([^/]+)/", ckpt)
+                if m is not None:
+                    alpha = m.group(1)
         elif script == "train.py":
             phase = "training"
             if alpha == "-" and _get_multi(tokens, "--alphas"):
                 alpha = f"sweep({','.join(_get_multi(tokens, '--alphas'))})"
+        elif script == "train_dt.py":
+            phase = "training"
+            la = _get_arg(tokens, "--logic_alpha", None)
+            if la is not None:
+                alpha = la
 
         formatted.append(
             f"CB - {semantics} - {spec} - Seed {seed} - Alpha {alpha} ({phase}) "
