@@ -139,6 +139,41 @@ def save_dt_dataset_artifact(args, dataset, artifact_tag: str = "dataset_snapsho
     return {"npz_path": npz_path, "meta_path": meta_path}
 
 
+def run_tt_style_dataset_analysis(args, dataset):
+    """
+    Reuse the TT dataset analysis pipeline for DT-generated datasets.
+
+    This intentionally calls the same analyzer used by TT (`train_cb.analyze_dataset`)
+    so DT runs emit the same dataset_analysis artifacts and summary fields.
+    """
+    has_formula_source = bool(
+        getattr(args, "spec", None) is not None
+        or getattr(args, "ltl_formula", None) is not None
+        or getattr(args, "ltl_formulas", None) is not None
+    )
+    if not has_formula_source:
+        raise ValueError(
+            "TT-style dataset analysis requires --spec or --ltl_formula(s)."
+        )
+
+    # Defer import to avoid pulling TT dependencies unless analysis is requested.
+    from train_cb import analyze_dataset, build_adapter_and_dfa
+
+    if not hasattr(args, "constraint_dims"):
+        args.constraint_dims = [0]
+    if not hasattr(args, "dfa_mode"):
+        args.dfa_mode = "product"
+    if not hasattr(args, "use_safe_dfa"):
+        args.use_safe_dfa = False
+    if not hasattr(args, "frozenlake_use_position_props"):
+        args.frozenlake_use_position_props = False
+    if not hasattr(args, "dfa_backend"):
+        args.dfa_backend = "auto"
+
+    adapter, _, raw_dfa = build_adapter_and_dfa(args, dataset)
+    analyze_dataset(args, dataset, adapter, raw_dfa)
+
+
 def apply_smoke_mode_dt(args):
     if not getattr(args, "smoke", False):
         return args

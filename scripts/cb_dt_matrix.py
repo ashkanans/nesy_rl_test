@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import csv
 import json
 import multiprocessing as mp
@@ -8,14 +9,18 @@ import shlex
 import subprocess
 import sys
 import time
+import traceback
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from queue import Empty
+from types import SimpleNamespace
 
 import numpy as np
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 PYTHON = sys.executable
 
 
@@ -43,6 +48,21 @@ class WorkerConfig:
     baseline_keys: list[str]
     logic_alphas: list[float]
     extra_args: list[str]
+    save_generated_dataset: bool
+    dataset_artifact_dir: str | None
+    dataset_artifact_name: str
+    skip_dataset_analysis: bool
+    num_episodes: int
+    max_steps: int
+    context_len: int
+    stochastic: bool
+    cb_longest_path_max_expansions: int
+    cb_policy_mix_sampling: str
+    cb_policy_mix_normal_spec: str | None
+    cb_policy_mix_normal_mean_mode: str
+    cb_state_semantics: str
+    dfa_mode: str
+    use_safe_dfa: bool
     num_action_candidates: int
     knn_k: int
     epochs: int
@@ -104,7 +124,7 @@ def _cmd_arg(cmd: list[str], flag: str, default: str | None = None) -> str | Non
 def _build_seed_dataset_artifact_name(job: Job, cfg: WorkerConfig) -> str:
     # Keep dataset cache stable per seed+mix+semantics so repeated runs reuse same artifact.
     state_semantics = _cmd_arg(cfg.train_cmd_common, "--cb_state_semantics", "post") or "post"
-    base_name = _cmd_arg(cfg.extra_args, "--dataset_artifact_name", "dataset_snapshot") or "dataset_snapshot"
+    base_name = cfg.dataset_artifact_name or "dataset_snapshot"
     mix_slug = _slug(job.policy_mix_spec) or "mix"
     return _slug(f"{base_name}_{state_semantics}_{mix_slug}_seed{int(job.seed)}")
 
@@ -126,6 +146,25 @@ def _gpu_available(gpu_id: int | None) -> bool:
     return str(gpu_id) in out
 
 
+def _visible_gpu_ids() -> list[int]:
+    cmd = ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"]
+    try:
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True, timeout=10)
+    except Exception:
+        return []
+    ids: list[int] = []
+    for line in out.splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        token = raw.split(",")[0].strip()
+        try:
+            ids.append(int(token))
+        except Exception:
+            continue
+    return ids
+
+
 def _parse_gpu_worker_map(raw: str | None, workers: int) -> list[int | None]:
     if not raw:
         return [None for _ in range(workers)]
@@ -136,6 +175,60 @@ def _parse_gpu_worker_map(raw: str | None, workers: int) -> list[int | None]:
             f"--gpu_worker_map length ({len(parsed)}) must equal --parallel_workers ({workers})."
         )
     return parsed
+
+
+def _extract_dataset_artifact_options(extra_args: list[str]) -> tuple[bool, str | None, str]:
+    save_generated_dataset = True
+    dataset_artifact_dir: str | None = None
+    dataset_artifact_name = "dataset_snapshot"
+
+    i = 0
+    while i < len(extra_args):
+        tok = extra_args[i]
+        if tok == "--save_generated_dataset":
+            save_generated_dataset = True
+            i += 1
+            continue
+        if tok == "--no-save_generated_dataset":
+            save_generated_dataset = False
+            i += 1
+            continue
+        if tok == "--dataset_artifact_dir":
+            if i + 1 < len(extra_args):
+                dataset_artifact_dir = extra_args[i + 1]
+                i += 2
+                continue
+            i += 1
+            continue
+        if tok == "--dataset_artifact_name":
+            if i + 1 < len(extra_args):
+                dataset_artifact_name = str(extra_args[i + 1]).strip() or "dataset_snapshot"
+                i += 2
+                continue
+            i += 1
+            continue
+        i += 1
+
+    return save_generated_dataset, dataset_artifact_dir, dataset_artifact_name
+
+
+def _strip_dataset_artifact_flags(extra_args: list[str]) -> list[str]:
+    out: list[str] = []
+    i = 0
+    while i < len(extra_args):
+        tok = extra_args[i]
+        if tok in {"--save_generated_dataset", "--no-save_generated_dataset"}:
+            i += 1
+            continue
+        if tok in {"--dataset_artifact_dir", "--dataset_artifact_name"}:
+            if i + 1 < len(extra_args):
+                i += 2
+                continue
+            i += 1
+            continue
+        out.append(tok)
+        i += 1
+    return out
 
 
 def _alpha_tag(alpha: float) -> str:
@@ -356,6 +449,69 @@ def _run_subprocess(
     return int(proc.returncode), cmd_str
 
 
+def _run_tt_dataset_analysis(job: Job, cfg: WorkerConfig) -> tuple[str, str | None]:
+    if cfg.skip_dataset_analysis:
+        return "skipped", None
+
+    summary_path = os.path.join(job.train_root, "dataset_analysis", "summary.json")
+    if cfg.skip_completed and os.path.exists(summary_path):
+        return "skipped", None
+
+    log_path = os.path.join(job.train_root, "dataset_analysis", "console.log")
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+    if cfg.dry_run:
+        with open(log_path, "a") as lf:
+            lf.write(
+                "[dry-run:dataset-analysis] run_tt_style_dataset_analysis "
+                f"spec={job.spec} mix={job.policy_mix_spec} seed={job.seed}\n"
+            )
+        return "ok", None
+
+    try:
+        from planning.dt_runtime import build_dt_offline_source, run_tt_style_dataset_analysis
+
+        analysis_args = SimpleNamespace(
+            env="cb",
+            seed=int(job.seed),
+            num_episodes=int(cfg.num_episodes),
+            max_steps=int(cfg.max_steps),
+            context_len=int(cfg.context_len),
+            stochastic=bool(cfg.stochastic),
+            cb_policy_mix_spec=str(job.policy_mix_spec),
+            cb_policy_mix_sampling=str(cfg.cb_policy_mix_sampling),
+            cb_policy_mix_normal_spec=cfg.cb_policy_mix_normal_spec,
+            cb_policy_mix_normal_mean_mode=str(cfg.cb_policy_mix_normal_mean_mode),
+            cb_state_semantics=str(cfg.cb_state_semantics),
+            cb_longest_path_max_expansions=int(cfg.cb_longest_path_max_expansions),
+            spec=str(job.spec),
+            ltl_formula=None,
+            ltl_formulas=None,
+            dfa_mode=str(cfg.dfa_mode),
+            use_safe_dfa=bool(cfg.use_safe_dfa),
+            constraint_dims=[0],
+            frozenlake_use_position_props=False,
+            dfa_backend="auto",
+            save_path=job.train_root,
+            run_dir=job.train_root,
+        )
+
+        with open(log_path, "a") as lf, contextlib.redirect_stdout(lf), contextlib.redirect_stderr(lf):
+            print(f"[dataset-analysis] ts={time.time()}")
+            dataset, skip_reason = build_dt_offline_source(analysis_args)
+            if skip_reason is not None:
+                raise RuntimeError(f"Dataset analysis skipped unexpectedly: {skip_reason}")
+            run_tt_style_dataset_analysis(analysis_args, dataset)
+        if not os.path.exists(summary_path):
+            return "failed", "dataset_analysis_missing_summary"
+        return "ok", None
+    except Exception:
+        with open(log_path, "a") as lf:
+            lf.write("[dataset-analysis:error]\n")
+            traceback.print_exc(file=lf)
+        return "failed", "dataset_analysis_failed"
+
+
 def _train_baselines(job: Job, cfg: WorkerConfig) -> tuple[str, str | None]:
     if cfg.skip_completed and _all_checkpoints_exist(job.train_root, cfg.baseline_keys, cfg.epochs):
         return "skipped", None
@@ -385,16 +541,18 @@ def _train_baselines(job: Job, cfg: WorkerConfig) -> tuple[str, str | None]:
         # Save one stable dataset artifact per seed (and policy-mix/semantics).
         # Skip redundant saves once the shared artifact already exists.
         artifact_name = _build_seed_dataset_artifact_name(job, cfg)
-        artifact_dir = os.path.join(job.seed_root, "dataset_artifacts")
+        artifact_dir = cfg.dataset_artifact_dir or os.path.join(job.seed_root, "dataset_artifacts")
         artifact_npz = os.path.join(artifact_dir, f"{artifact_name}.npz")
         artifact_meta = os.path.join(artifact_dir, f"{artifact_name}.meta.json")
-        if "--no-save_generated_dataset" not in cfg.extra_args:
+        if cfg.save_generated_dataset:
             if os.path.exists(artifact_npz) and os.path.exists(artifact_meta):
                 cmd.append("--no-save_generated_dataset")
             else:
                 cmd.extend(["--save_generated_dataset"])
                 cmd.extend(["--dataset_artifact_dir", artifact_dir])
                 cmd.extend(["--dataset_artifact_name", artifact_name])
+        else:
+            cmd.append("--no-save_generated_dataset")
         rc, cmd_str = _run_subprocess(
             cmd, log_path=train_log, gpu_id=cfg.gpu_id, dry_run=cfg.dry_run, log_prefix=f"train:{baseline}"
         )
@@ -454,9 +612,8 @@ def _evaluate_mode(job: Job, cfg: WorkerConfig, mode: str) -> tuple[str, dict[st
             ]
         )
         eval_cmd.extend(cfg.extra_args)
-        # Eval can run many times per seed (baseline x decoding mode); avoid dataset clobber spam.
-        if "--save_generated_dataset" not in cfg.extra_args:
-            eval_cmd.append("--no-save_generated_dataset")
+        # Eval can run many times per seed (baseline x decoding mode); never save datasets here.
+        eval_cmd.append("--no-save_generated_dataset")
 
         eval_log = os.path.join(baseline_dir, "console.log")
         rc, _ = _run_subprocess(
@@ -509,9 +666,21 @@ def _run_single_job(job: Job, cfg: WorkerConfig) -> dict:
             "decoding_modes": cfg.decoding_modes,
             "baselines": cfg.baseline_keys,
             "logic_alphas": cfg.logic_alphas,
+            "skip_dataset_analysis": bool(cfg.skip_dataset_analysis),
             "extra_args": cfg.extra_args,
         },
     )
+
+    analysis_status, analysis_error = _run_tt_dataset_analysis(job, cfg)
+    if analysis_status == "failed":
+        return {
+            "status": "failed",
+            "job": asdict(job),
+            "worker_id": cfg.worker_id,
+            "gpu_id": cfg.gpu_id,
+            "elapsed_sec": float(time.time() - started),
+            "train_command": analysis_error,
+        }
 
     train_status, train_cmd = _train_baselines(job, cfg)
     if train_status == "failed":
@@ -724,6 +893,7 @@ def parse_args(argv: list[str] | None = None):
         default="base",
     )
     p.add_argument("--cb_state_semantics", type=str, choices=["pre", "post"], default="post")
+    p.add_argument("--skip_dataset_analysis", action="store_true")
 
     args, extra = p.parse_known_args(argv)
     return args, extra
@@ -742,11 +912,35 @@ def main(argv: list[str] | None = None):
     gpu_map = _parse_gpu_worker_map(args.gpu_worker_map, worker_count)
     if args.require_gpu and any(g is None for g in gpu_map):
         raise ValueError("When --require_gpu is enabled, provide --gpu_worker_map (e.g. 0,0,1,1).")
+    if args.require_gpu:
+        visible = _visible_gpu_ids()
+        if not visible:
+            raise RuntimeError(
+                "--require_gpu is enabled but no visible GPUs were detected via nvidia-smi."
+            )
+        missing = sorted({int(g) for g in gpu_map if g is not None} - set(visible))
+        if missing:
+            raise ValueError(
+                f"--gpu_worker_map references unavailable GPU ids {missing}; visible GPUs are {visible}."
+            )
+
+    save_generated_dataset, dataset_artifact_dir, dataset_artifact_name = _extract_dataset_artifact_options(
+        list(extra)
+    )
+    passthrough_extra = _strip_dataset_artifact_flags(list(extra))
 
     logic_alphas = _normalize_logic_alphas(list(args.alphas))
     baseline_keys = _baseline_keys(logic_alphas)
     train_cmd_common = _build_train_cmd_common(args)
     eval_cmd_common = _build_eval_cmd_common(args)
+    warnings: list[str] = []
+    if args.use_safe_dfa and set(args.decoding_modes) == {"greedy"}:
+        msg = (
+            "--use_safe_dfa is enabled with decoding_modes=['greedy']; "
+            "DFA constraints affect evaluation metrics but not greedy action selection."
+        )
+        print(f"[warn] {msg}")
+        warnings.append(msg)
 
     manifest = {
         "output_root": args.output_root,
@@ -757,12 +951,18 @@ def main(argv: list[str] | None = None):
         "continue_on_error": bool(args.continue_on_error),
         "skip_completed": not bool(args.no_skip_completed),
         "dry_run": bool(args.dry_run),
-        "extra_args": extra,
+        "raw_extra_args": list(extra),
+        "extra_args": passthrough_extra,
+        "save_generated_dataset": bool(save_generated_dataset),
+        "dataset_artifact_dir": dataset_artifact_dir,
+        "dataset_artifact_name": dataset_artifact_name,
+        "skip_dataset_analysis": bool(args.skip_dataset_analysis),
         "train_cmd_common": train_cmd_common,
         "eval_cmd_common": eval_cmd_common,
         "decoding_modes": list(args.decoding_modes),
         "baseline_keys": baseline_keys,
         "logic_alphas_effective": logic_alphas,
+        "warnings": warnings,
         "jobs_total": len(jobs),
         "jobs": [asdict(j) for j in jobs],
         "created_ts": time.time(),
@@ -795,7 +995,24 @@ def main(argv: list[str] | None = None):
             decoding_modes=list(args.decoding_modes),
             baseline_keys=baseline_keys,
             logic_alphas=logic_alphas,
-            extra_args=list(extra),
+            extra_args=list(passthrough_extra),
+            save_generated_dataset=bool(save_generated_dataset),
+            dataset_artifact_dir=dataset_artifact_dir,
+            dataset_artifact_name=dataset_artifact_name,
+            skip_dataset_analysis=bool(args.skip_dataset_analysis),
+            num_episodes=int(args.num_episodes),
+            max_steps=int(args.max_steps),
+            context_len=int(args.context_len),
+            stochastic=bool(args.stochastic),
+            cb_longest_path_max_expansions=int(args.cb_longest_path_max_expansions),
+            cb_policy_mix_sampling=str(args.cb_policy_mix_sampling),
+            cb_policy_mix_normal_spec=(
+                None if args.cb_policy_mix_normal_spec is None else str(args.cb_policy_mix_normal_spec)
+            ),
+            cb_policy_mix_normal_mean_mode=str(args.cb_policy_mix_normal_mean_mode),
+            cb_state_semantics=str(args.cb_state_semantics),
+            dfa_mode=str(args.dfa_mode),
+            use_safe_dfa=bool(args.use_safe_dfa),
             num_action_candidates=int(args.num_action_candidates),
             knn_k=int(args.knn_k),
             epochs=int(args.epochs),
