@@ -129,6 +129,20 @@ def _build_seed_dataset_artifact_name(job: Job, cfg: WorkerConfig) -> str:
     return _slug(f"{base_name}_{state_semantics}_{mix_slug}_seed{int(job.seed)}")
 
 
+def _shared_dynamics_checkpoint_path(job: Job, cfg: WorkerConfig) -> str | None:
+    backend = _cmd_arg(cfg.train_cmd_common, "--dt_logic_dynamics_backend", "tabular_env") or "tabular_env"
+    if backend != "neural_dataset":
+        return None
+    explicit = _cmd_arg(cfg.train_cmd_common, "--dynamics_checkpoint_path", None)
+    if explicit:
+        return explicit
+    save_flag = "--save_dynamics_checkpoint" in cfg.train_cmd_common
+    no_save_flag = "--no-save_dynamics_checkpoint" in cfg.train_cmd_common
+    if no_save_flag or not save_flag:
+        return None
+    return os.path.join(job.train_root, "shared_dynamics_model.pt")
+
+
 def _write_json(path: str, payload: dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
@@ -553,6 +567,9 @@ def _train_baselines(job: Job, cfg: WorkerConfig) -> tuple[str, str | None]:
                 cmd.extend(["--dataset_artifact_name", artifact_name])
         else:
             cmd.append("--no-save_generated_dataset")
+        dynamics_ckpt = _shared_dynamics_checkpoint_path(job, cfg)
+        if dynamics_ckpt is not None:
+            cmd.extend(["--dynamics_checkpoint_path", dynamics_ckpt])
         rc, cmd_str = _run_subprocess(
             cmd, log_path=train_log, gpu_id=cfg.gpu_id, dry_run=cfg.dry_run, log_prefix=f"train:{baseline}"
         )
@@ -776,6 +793,16 @@ def _build_train_cmd_common(args: argparse.Namespace) -> list[str]:
     cmd.extend(["--grad_clip", str(args.grad_clip)])
     cmd.extend(["--logic_rollout_horizon", str(args.logic_rollout_horizon)])
     cmd.extend(["--logic_temperature", str(args.logic_temperature)])
+    cmd.extend(["--dt_logic_dynamics_backend", str(args.dt_logic_dynamics_backend)])
+    cmd.extend(["--dynamics_epochs", str(args.dynamics_epochs)])
+    cmd.extend(["--dynamics_batch_size", str(args.dynamics_batch_size)])
+    cmd.extend(["--dynamics_lr", str(args.dynamics_lr)])
+    cmd.extend(["--dynamics_hidden_dim", str(args.dynamics_hidden_dim)])
+    cmd.extend(["--dynamics_layers", str(args.dynamics_layers)])
+    cmd.extend(["--dynamics_weight_decay", str(args.dynamics_weight_decay)])
+    cmd.extend(["--dynamics_val_fraction", str(args.dynamics_val_fraction)])
+    cmd.extend(["--dynamics_max_transition_entries", str(args.dynamics_max_transition_entries)])
+    cmd.extend(["--dynamics_temperature", str(args.dynamics_temperature)])
     cmd.extend(["--n_layer", str(args.n_layer)])
     cmd.extend(["--n_head", str(args.n_head)])
     cmd.extend(["--n_embd", str(args.n_embd)])
@@ -784,6 +811,16 @@ def _build_train_cmd_common(args: argparse.Namespace) -> list[str]:
     cmd.extend(["--cb_policy_mix_sampling", str(args.cb_policy_mix_sampling)])
     cmd.extend(["--cb_state_semantics", str(args.cb_state_semantics)])
     cmd.extend(["--cb_policy_mix_normal_mean_mode", str(args.cb_policy_mix_normal_mean_mode)])
+    if args.dynamics_freeze_after_fit:
+        cmd.append("--dynamics_freeze_after_fit")
+    else:
+        cmd.append("--no-dynamics_freeze_after_fit")
+    if args.save_dynamics_checkpoint:
+        cmd.append("--save_dynamics_checkpoint")
+    else:
+        cmd.append("--no-save_dynamics_checkpoint")
+    if args.dynamics_checkpoint_path is not None:
+        cmd.extend(["--dynamics_checkpoint_path", str(args.dynamics_checkpoint_path)])
     if args.cb_policy_mix_normal_spec is not None:
         cmd.extend(["--cb_policy_mix_normal_spec", str(args.cb_policy_mix_normal_spec)])
     if args.stochastic:
@@ -862,6 +899,24 @@ def parse_args(argv: list[str] | None = None):
     p.add_argument("--grad_clip", type=float, default=1.0)
     p.add_argument("--logic_rollout_horizon", type=int, default=2)
     p.add_argument("--logic_temperature", type=float, default=1.0)
+    p.add_argument(
+        "--dt_logic_dynamics_backend",
+        type=str,
+        choices=["tabular_env", "tabular_dataset", "neural_dataset"],
+        default="tabular_env",
+    )
+    p.add_argument("--dynamics_epochs", type=int, default=20)
+    p.add_argument("--dynamics_batch_size", type=int, default=256)
+    p.add_argument("--dynamics_lr", type=float, default=1e-3)
+    p.add_argument("--dynamics_hidden_dim", type=int, default=128)
+    p.add_argument("--dynamics_layers", type=int, default=2)
+    p.add_argument("--dynamics_weight_decay", type=float, default=1e-4)
+    p.add_argument("--dynamics_val_fraction", type=float, default=0.1)
+    p.add_argument("--dynamics_freeze_after_fit", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--dynamics_checkpoint_path", type=str, default=None)
+    p.add_argument("--save_dynamics_checkpoint", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--dynamics_max_transition_entries", type=int, default=10000000)
+    p.add_argument("--dynamics_temperature", type=float, default=1.0)
     p.add_argument("--n_layer", type=int, default=4)
     p.add_argument("--n_head", type=int, default=4)
     p.add_argument("--n_embd", type=int, default=128)

@@ -246,11 +246,25 @@ loss = action_CE + logic_alpha * logic_loss
 
 8. Current DT logic loss does not use LTLf/DeepDFA directly. It uses a transition model and hazard mask to estimate short-horizon unsafe-state probability.
 
+DT logic dynamics backends:
+
+- `tabular_env`: current oracle/model-based path. It may use privileged environment transitions such as true `P` tables or grid rules.
+- `tabular_dataset`: pure offline tabular dynamics from dataset-only transition counts.
+- `neural_dataset`: pure offline neural dynamics `p_theta(s_next | s, a)` learned only from dataset trajectories and token-schema state/action fields.
+
 Important fairness note:
 
 - With `logic_alpha=0`, DT uses no transition model.
-- With `logic_alpha>0`, `build_tabular_dynamics(...)` may use environment transition tables/rules when available, otherwise dataset-estimated counts.
-- For strict offline-RL comparisons, treat env-derived dynamics as privileged information and report separately from dataset-estimated dynamics.
+- With `logic_alpha>0`, `tabular_env` may use environment transition tables/rules and should be treated as privileged information.
+- `tabular_dataset` and `neural_dataset` are the pure offline DT logic-loss variants.
+- For strict offline-RL comparisons, report `tabular_env` separately from dataset-only dynamics.
+
+Important representation note:
+
+- The offline dynamics extract transitions from stored consecutive dataset rows using canonical schema fields.
+- No environment internals are needed for `tabular_dataset` or `neural_dataset`.
+- For ColourBomb with the default `cb_state_semantics="post"`, the learned model follows stored post-action state tokens across consecutive rows.
+- `cb_state_semantics="pre"` is closer to classical `s_t, a_t -> s_{t+1}` dynamics, but the implementation intentionally does not special-case ColourBomb.
 
 Files to study:
 

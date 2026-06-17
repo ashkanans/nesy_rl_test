@@ -15,6 +15,14 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from models.dt_model import DecisionTransformerDiscrete
+from planning.dynamics_runtime import (
+    build_dataset_tabular_dynamics,
+    build_dynamics_dataset_identifiers,
+    fit_neural_dynamics_model,
+    load_neural_dynamics_checkpoint,
+    neural_dynamics_to_transition_tensor,
+    save_neural_dynamics_checkpoint,
+)
 from planning.dt_runtime import (
     DTRolloutConfig,
     apply_smoke_mode_dt,
@@ -59,6 +67,32 @@ def get_arg_parser(add_help=True):
     p.add_argument("--logic_alpha", type=float, default=0.0)
     p.add_argument("--logic_rollout_horizon", type=int, default=2)
     p.add_argument("--logic_temperature", type=float, default=1.0)
+    p.add_argument(
+        "--dt_logic_dynamics_backend",
+        type=str,
+        choices=["tabular_env", "tabular_dataset", "neural_dataset"],
+        default="tabular_env",
+    )
+    p.add_argument("--dynamics_epochs", type=int, default=20)
+    p.add_argument("--dynamics_batch_size", type=int, default=256)
+    p.add_argument("--dynamics_lr", type=float, default=1e-3)
+    p.add_argument("--dynamics_hidden_dim", type=int, default=128)
+    p.add_argument("--dynamics_layers", type=int, default=2)
+    p.add_argument("--dynamics_weight_decay", type=float, default=1e-4)
+    p.add_argument("--dynamics_val_fraction", type=float, default=0.1)
+    p.add_argument(
+        "--dynamics_freeze_after_fit",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    p.add_argument("--dynamics_checkpoint_path", type=str, default=None)
+    p.add_argument(
+        "--save_dynamics_checkpoint",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    p.add_argument("--dynamics_max_transition_entries", type=int, default=10000000)
+    p.add_argument("--dynamics_temperature", type=float, default=1.0)
 
     p.add_argument("--n_layer", type=int, default=2)
     p.add_argument("--n_head", type=int, default=2)
@@ -165,11 +199,76 @@ def train(args):
     num_actions = int(base_dataset.env.action_space.n)
     transition_probs_t = None
     hazard_mask_t = None
+    dynamics_stats = None
+    dynamics_model_path = None
     if float(args.logic_alpha) > 0.0:
-        dyn = build_tabular_dynamics(base_dataset)
         hazard = hazard_mask_for_env(args.env, base_dataset.env)
-        transition_probs_t = torch.from_numpy(dyn).float().to(device)
         hazard_mask_t = torch.from_numpy(hazard).float().to(device)
+        if args.dt_logic_dynamics_backend == "tabular_env":
+            dyn = build_tabular_dynamics(base_dataset)
+            transition_probs_t = torch.from_numpy(dyn).float().to(device)
+            dynamics_stats = {"backend": "tabular_env", "pure_offline": False}
+        elif args.dt_logic_dynamics_backend == "tabular_dataset":
+            dyn, dynamics_stats = build_dataset_tabular_dynamics(base_dataset)
+            transition_probs_t = torch.from_numpy(dyn).float().to(device)
+            dynamics_stats["backend"] = "tabular_dataset"
+            dynamics_stats["pure_offline"] = True
+        elif args.dt_logic_dynamics_backend == "neural_dataset":
+            dataset_ids = build_dynamics_dataset_identifiers(base_dataset, args=args)
+            requested_ckpt = str(args.dynamics_checkpoint_path).strip() if args.dynamics_checkpoint_path else None
+            save_ckpt = bool(args.save_dynamics_checkpoint)
+            if requested_ckpt:
+                dynamics_model_path = requested_ckpt
+            elif save_ckpt:
+                dynamics_model_path = os.path.join(run_dir, "dynamics_model.pt")
+
+            if dynamics_model_path is not None and os.path.exists(dynamics_model_path):
+                dynamics_model, dynamics_stats = load_neural_dynamics_checkpoint(
+                    path=dynamics_model_path,
+                    device=device,
+                    expected_num_states=num_states,
+                    expected_num_actions=num_actions,
+                    expected_hidden_dim=int(args.dynamics_hidden_dim),
+                    expected_num_layers=int(args.dynamics_layers),
+                    freeze_after_load=bool(args.dynamics_freeze_after_fit),
+                )
+            else:
+                dynamics_model, dynamics_stats = fit_neural_dynamics_model(
+                    base_dataset=base_dataset,
+                    hidden_dim=int(args.dynamics_hidden_dim),
+                    num_layers=int(args.dynamics_layers),
+                    epochs=int(args.dynamics_epochs),
+                    batch_size=int(args.dynamics_batch_size),
+                    lr=float(args.dynamics_lr),
+                    weight_decay=float(args.dynamics_weight_decay),
+                    val_fraction=float(args.dynamics_val_fraction),
+                    device=device,
+                    seed=int(args.seed),
+                    temperature=float(args.dynamics_temperature),
+                    freeze_after_fit=bool(args.dynamics_freeze_after_fit),
+                )
+                dynamics_stats["dataset_identifiers"] = dataset_ids
+                if dynamics_model_path is not None:
+                    save_neural_dynamics_checkpoint(
+                        path=dynamics_model_path,
+                        model=dynamics_model,
+                        stats=dynamics_stats,
+                        dataset_identifiers=dataset_ids,
+                    )
+            transition_probs_t = neural_dynamics_to_transition_tensor(
+                model=dynamics_model,
+                num_states=num_states,
+                num_actions=num_actions,
+                device=device,
+                temperature=float(args.dynamics_temperature),
+                max_entries=int(args.dynamics_max_transition_entries),
+            ).detach()
+            dynamics_stats["backend"] = "neural_dataset"
+            dynamics_stats["pure_offline"] = True
+            dynamics_stats["checkpoint_path"] = dynamics_model_path
+            dynamics_stats.setdefault("dataset_identifiers", dataset_ids)
+        else:
+            raise ValueError(f"Unsupported DT dynamics backend '{args.dt_logic_dynamics_backend}'")
 
     model = DecisionTransformerDiscrete(
         num_states=num_states,
@@ -254,6 +353,8 @@ def train(args):
                 "logic_alpha": float(args.logic_alpha),
                 "logic_rollout_horizon": int(args.logic_rollout_horizon),
                 "logic_temperature": float(args.logic_temperature),
+                "dt_logic_dynamics_backend": str(args.dt_logic_dynamics_backend),
+                "dynamics_stats": dynamics_stats,
             },
         },
         ckpt_path,
@@ -279,7 +380,10 @@ def train(args):
         "epoch_logic_losses": [float(x) for x in epoch_logic_losses],
         "device": str(device),
         "checkpoint_path": ckpt_path,
+        "dynamics_stats": dynamics_stats,
     }
+    if dynamics_model_path is not None:
+        summary["dynamics_checkpoint_path"] = dynamics_model_path
 
     if not args.no_eval_after_train:
         rollout_cfg = DTRolloutConfig(

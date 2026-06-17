@@ -146,6 +146,19 @@ The DT logic loss is not generic LTLf/DeepDFA. It does:
 4. Use `hazard_mask[s]` to estimate unsafe-state probability.
 5. Average hazard probability over context and rollout horizon.
 
+DT dynamics backend options:
+
+- `tabular_env`: oracle/model-based dynamics. This may use true environment transition tables or grid rules and is not pure offline.
+- `tabular_dataset`: pure offline count-based dynamics estimated only from observed dataset transitions.
+- `neural_dataset`: pure offline neural dynamics `p_theta(s_next | s, a)` trained only from consecutive dataset rows and token-schema state/action fields.
+
+Important scope boundary:
+
+- The neural dynamics model is not an extra input to DT.
+- DT still receives only `state + previous action + RTG + timestep`.
+- The learned dynamics model is used only to build `transition_probs` for the auxiliary DT logic loss.
+- During training, the state input still comes from the offline dataset.
+
 What DT generates:
 
 - DT generates only actions.
@@ -171,4 +184,3 @@ predicts: current action
 can model: policy only, not environment state generation
 logic training: optional short-horizon hazard rollout from known states
 ```
-

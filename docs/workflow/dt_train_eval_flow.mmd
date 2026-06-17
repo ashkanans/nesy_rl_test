@@ -30,14 +30,15 @@ flowchart TD
 
     Logits --> LogicSwitch{"--logic_alpha > 0?"}
     LogicSwitch -->|No| ZeroLogic["logic_loss = 0"]
-    LogicSwitch -->|Yes| DynBuild["build_tabular_dynamics"]
-    DynBuild --> DynSource{"Dynamics source priority"}
-    DynSource --> EnvP["Env transition table P<br/>when exposed"]
-    DynSource --> GridRules["Grid movement rules<br/>when available"]
-    DynSource --> Counts["Dataset transition counts<br/>fallback"]
+    LogicSwitch -->|Yes| DynSource{"--dt_logic_dynamics_backend"}
+    DynSource --> EnvP["tabular_env<br/>oracle env transitions"]
+    DynSource --> Counts["tabular_dataset<br/>offline dataset counts"]
+    DynSource --> NeuralFit["neural_dataset<br/>fit/load offline neural dynamics"]
+    NeuralFit --> NeuralRows["Examples from consecutive dataset rows<br/>using token_schema state/action fields"]
+    NeuralRows --> NeuralTensor["Enumerate all (s, a)<br/>softmax neural logits -> transition tensor"]
     EnvP --> TransProb["transition_probs[a, s, s_next]"]
-    GridRules --> TransProb
     Counts --> TransProb
+    NeuralTensor --> TransProb
     Base --> Hazard["hazard_mask_for_env"]
     Hazard --> Penalty["compute_dt_logic_rollout_penalty"]
     TransProb --> Penalty
@@ -86,7 +87,7 @@ flowchart TD
     classDef logic fill:#fff7ed,stroke:#ea580c,color:#431407
     classDef output fill:#f1f5f9,stroke:#475569,color:#0f172a
 
-    class B,C,CB,FL,DSRL,Base,Artifact,DTData,Rows,Extract,RTG,Windows,Inputs,Targets,DynBuild,EnvP,GridRules,Counts,TransProb,Hazard,Policy,KnownStates,Step,Eval,Candidates,Sim,Execute,Trace,End process
+    class B,C,CB,FL,DSRL,Base,Artifact,DTData,Rows,Extract,RTG,Windows,Inputs,Targets,EnvP,Counts,NeuralFit,NeuralRows,NeuralTensor,TransProb,Hazard,Policy,KnownStates,Step,Eval,Candidates,Sim,Execute,Trace,End process
     class Model,Emb,Causal,Logits,CE,ZeroLogic,Penalty,LogicLoss,Total model
     class BuildDFA,RawDFA,Advance,Prune,Rerank,Sat,SoftSat logic
     class C1,LogicSwitch,DynSource,FormulaSwitch,DTDecode decision

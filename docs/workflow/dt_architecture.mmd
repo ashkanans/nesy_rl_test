@@ -37,10 +37,10 @@ flowchart TD
     SoftPolicy --> RolloutLogic["short horizon differentiable rollout"]
     StartState --> RolloutLogic
     RolloutLogic --> Trans["transition_probs[a, s, s_next]"]
-    Trans --> Source{"transition source"}
-    Source --> EnvP["true env P if exposed"]
-    Source --> Rules["grid rules if available"]
-    Source --> Counts["dataset counts fallback"]
+    Trans --> Source{"dynamics backend"}
+    Source --> EnvP["tabular_env<br/>true env P or grid rules"]
+    Source --> Counts["tabular_dataset<br/>dataset-only counts"]
+    Source --> Neural["neural_dataset<br/>fit p_theta(s_next | s, a)<br/>from offline rows only"]
     RolloutLogic --> Hazard["hazard_mask[s]"]
     Hazard --> LogicLoss["logic_loss<br/>average expected hazard occupancy"]
 
@@ -72,6 +72,6 @@ flowchart TD
 
     class A,S,PA,RTG,Tm,Target,Mask input
     class SE,AE,RE,Clamp,TE,Sum,LN,ApplyMask,CausalMask,Encoder,EncBlock,Hidden,Head,Logits,CE,Ignore,SupLoss,SoftPolicy,StartState,RolloutLogic,TrainOut,EvalPolicy,Env,NextState,Loop arch
-    class Trans,EnvP,Rules,Counts,Hazard,LogicLoss,DFA logic
+    class Trans,EnvP,Counts,Neural,Hazard,LogicLoss,DFA logic
     class LogicSwitch,Source,Mode decision
     class Zero,Total,Greedy,Constrained,KNN,Metrics output
