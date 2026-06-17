@@ -1,0 +1,113 @@
+flowchart TD
+    Start([Research question]) --> Config["CLI args or YAML config"]
+    Config --> EnvChoice{"Environment"}
+    EnvChoice --> CB["cb / ColourBomb"]
+    EnvChoice --> FL["frozenlake"]
+    EnvChoice --> NRM["nrm_nav"]
+    EnvChoice --> DSRL["dsrl"]
+    EnvChoice --> AM["antmaze protocol"]
+
+    CB --> Episodes["Offline episodes"]
+    FL --> Episodes
+    NRM --> Episodes
+    DSRL --> Episodes
+    AM --> Episodes
+
+    Episodes --> Schema["Canonical token schema<br/>state, action, reward, aux/cost"]
+    Schema --> EndRow["Append explicit END row"]
+    EndRow --> DatasetArtifact["Dataset artifact<br/>NPZ + meta JSON"]
+
+    Config --> SpecSource{"Logic source"}
+    SpecSource --> NamedSpec["--spec preset<br/>specs/*.py"]
+    SpecSource --> SingleFormula["--ltl_formula"]
+    SpecSource --> MultiFormula["--ltl_formulas"]
+    NamedSpec --> FormulaList["Formula list"]
+    SingleFormula --> FormulaList
+    MultiFormula --> FormulaList
+
+    FormulaList --> Adapter["TTDFAAdapter<br/>token IDs -> symbolic propositions"]
+    Schema --> Adapter
+    Adapter --> DFABackend{"DFA backend"}
+    DFABackend --> Template["template<br/>G(!bad), F(goal), safety & reach"]
+    DFABackend --> LTLF["ltlf generic compiler"]
+    DFABackend --> Auto["auto chooses template then ltlf"]
+    Template --> RawDFA["Raw DFA"]
+    LTLF --> RawDFA
+    Auto --> RawDFA
+
+    RawDFA --> DFAMode{"dfa_mode"}
+    DFAMode --> SingleDFA["single"]
+    DFAMode --> ProductDFA["product"]
+    DFAMode --> MultiDFA["multi"]
+    SingleDFA --> DeepDFA["DeepDFA / differentiable automaton"]
+    ProductDFA --> DeepDFA
+    MultiDFA --> DeepDFA
+
+    DatasetArtifact --> ModelChoice{"Model family"}
+    ModelChoice --> TTPath["Trajectory Transformer"]
+    ModelChoice --> DTPath["Decision Transformer"]
+    ModelChoice --> Baselines["Baselines"]
+
+    DeepDFA --> TTPath
+    Adapter --> TTPath
+    TTPath --> TTLoss["TT training loss<br/>(1-alpha)*CE + alpha*DeepDFA logic"]
+    TTLoss --> TTCheckpoint["TT checkpoint<br/>cb_state_epoch.pt"]
+
+    DatasetArtifact --> DTWindow["DT windows<br/>state, previous action, RTG, timestep -> action"]
+    DTWindow --> DTPath
+    DTPath --> DTLogic{"logic_alpha > 0?"}
+    DTLogic -->|No| DTCE["action cross entropy only"]
+    DTLogic -->|Yes| Dynamics["Transition model + hazard mask"]
+    Dynamics --> DTRolloutPenalty["short-horizon unsafe probability"]
+    DTCE --> DTCheckpoint["DT checkpoint<br/>dt_state_epoch.pt"]
+    DTRolloutPenalty --> DTCheckpoint
+
+    TTCheckpoint --> Eval["Rollout evaluation"]
+    DTCheckpoint --> Eval
+    Baselines --> Eval
+    RawDFA --> Eval
+    Adapter --> Eval
+
+    Eval --> DecodeMode{"Decoding / action selection"}
+    DecodeMode --> Greedy["TT greedy / DT greedy"]
+    DecodeMode --> Beam["TT beam"]
+    DecodeMode --> CBeam["TT constrained_beam<br/>DFA state tracking"]
+    DecodeMode --> DTConstrained["DT constrained lookahead<br/>DFA state tracking"]
+    DecodeMode --> DTKNN["DT kNN suffix memory"]
+
+    Greedy --> Executed["Executed environment rollouts"]
+    Beam --> Executed
+    CBeam --> Executed
+    DTConstrained --> Executed
+    DTKNN --> Executed
+
+    Executed --> FinalTrace["Finalize trace with END"]
+    FinalTrace --> HardSat["Hard DFA satisfaction"]
+    FinalTrace --> SoftSat["Soft DeepDFA satisfaction when available"]
+    FinalTrace --> EnvMetrics["Return, goals, hazards, step violations"]
+
+    HardSat --> Artifacts["Run artifacts"]
+    SoftSat --> Artifacts
+    EnvMetrics --> Artifacts
+    Artifacts --> MetricsJSON["metrics.json / metrics.csv"]
+    Artifacts --> DFASummary["dfa_summary.json"]
+    Artifacts --> RolloutStats["automaton_rollout_stats.json"]
+    Artifacts --> Plots["optional plots and paper figures"]
+
+    MetricsJSON --> Analysis["Analysis workflows"]
+    RolloutStats --> Analysis
+    Analysis --> Sweep["sweep.py<br/>alpha, discount, temp, samples"]
+    Analysis --> Suite["eval_suite.py<br/>multi-spec evaluation"]
+    Analysis --> Figures["recreate_*_figure.py"]
+
+    classDef input fill:#eef6ff,stroke:#2b6cb0,color:#102a43
+    classDef logic fill:#fff7ed,stroke:#c2410c,color:#431407
+    classDef model fill:#f0fdf4,stroke:#15803d,color:#052e16
+    classDef output fill:#f8fafc,stroke:#475569,color:#0f172a
+    classDef decision fill:#fefce8,stroke:#a16207,color:#422006
+
+    class Config,CB,FL,NRM,DSRL,AM,Episodes,Schema,EndRow,DatasetArtifact input
+    class SpecSource,DFABackend,DFAMode,ModelChoice,DTLogic,DecodeMode decision
+    class NamedSpec,SingleFormula,MultiFormula,FormulaList,Adapter,Template,LTLF,Auto,RawDFA,SingleDFA,ProductDFA,MultiDFA,DeepDFA,HardSat,SoftSat logic
+    class TTPath,DTPath,Baselines,TTLoss,DTWindow,DTCE,Dynamics,DTRolloutPenalty model
+    class TTCheckpoint,DTCheckpoint,Eval,Executed,FinalTrace,EnvMetrics,Artifacts,MetricsJSON,DFASummary,RolloutStats,Plots,Analysis,Sweep,Suite,Figures output

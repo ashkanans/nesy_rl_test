@@ -1,87 +1,122 @@
-% This is samplepaper.tex, a sample chapter demonstrating the
-% LLNCS macro package for Springer Computer Science proceedings;
-% Version 2.21 of 2022/01/12
-%
-\documentclass[runningheads]{llncs}
-%
-\usepackage[T1]{fontenc}
-% T1 fonts will be used to generate the final print and online PDFs,
-% so please use T1 fonts in your manuscript whenever possible.
-% Other font encondings may result in incorrect characters.
-%
-\usepackage{graphicx}
-% Used for displaying a sample figure. If possible, figure files should
-% be included in EPS format.
-%
-% If you use the hyperref package, please uncomment the following two lines
-% to display URLs in blue roman font according to Springer's eBook style:
-%\usepackage{color}
-%\renewcommand\UrlFont{\color{blue}\rmfamily}
-%\urlstyle{rm}
-%
+%% The first command in your LaTeX source must be the \documentclass command.
+%%
+%% Options:
+%% twocolumn : Two column layout. Do not use twocolumn for papers submitted to CEUR-WS!
+%% hf: enable header and footer.
+\documentclass[
+% twocolumn,
+% hf,
+]{ceurart}
 
-% TO BE DELETED BEFORE SUBMISSION
-\usepackage{xcolor}
+%%
+%% One can fix some overfulls
+\sloppy
 
+%%
+%% Minted listings support 
+%% Need pygment <http://pygments.org/> <http://pypi.python.org/pypi/Pygments>
+\usepackage{listings}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{todonotes}
+
+\newcommand{\ELE}[1]{\textcolor{Plum}{{[\textbf{Elena}: #1]}}}
+
+%% auto break lines
+\lstset{breaklines=true}
 
 \input{preamble}
 
+%%
+%% end of the preamble, start of the body of the document source.
 \begin{document}
-%
-\title{Neurosymbolic Injection of LTLf Constraints in Deep Reinforcement Learning Policies}
-%
-\titlerunning{Neurosymbolic Injection of LTLf Constraints in Deep RL Policies}
-% If the paper title is too long for the running head, you can set
-% an abbreviated paper title here
-%
-\author{Ashkan Ansarifard\orcidID{0009-0005-9247-1786} \and
-Matteo Mancanelli\orcidID{0009-0004-9547-7115} \and
-Elena Umili\orcidID{0000-0002-5639-6038} \and
-Fabio Patrizi\orcidID{0000-0002-9116-251X} }
-%\author{Ashkan Ansarifard\inst{1}\orcidID{0009-0005-9247-1786} \and
-%Matteo Mancanelli\inst{1}\orcidID{0009-0004-9547-7115} \and
-%Fabio Patrizi\inst{1}\orcidID{0000-0002-9116-251X} \and
-%Elena Umili\inst{1}\orcidID{0000-0002-5639-6038}}
-%
-\authorrunning{A. Ansarifard et al.}
-% First names are abbreviated in the running head.
-% If there are more than two authors, 'et al.' is used.
-%
-%\institute{Princeton University, Princeton NJ 08544, USA \and
-%Springer Heidelberg, Tiergartenstr. 17, 69121 Heidelberg, Germany
-%\email{lncs@springer.com}\\
-%\url{http://www.springer.com/gp/computer-science/lncs} \and
-%ABC Institute, Rupert-Karls-University Heidelberg, Heidelberg, Germany\\
-%\email{\{abc,lncs\}@uni-heidelberg.de}}
-\institute{University of Rome La Sapienza, Rome, Italy
-\email{ansarifard.1970082@studenti.uniroma1.it}\\
-\email{\{mancanelli,umili,patrizi\}@diag.uniroma1.it}}
-%
-\maketitle              % typeset the header of the contribution
-%
+
+%%
+%% Rights management information.
+%% CC-BY is default license.
+\copyrightyear{2022}
+\copyrightclause{Copyright for this paper by its authors.
+  Use permitted under Creative Commons License Attribution 4.0
+  International (CC BY 4.0).}
+
+%%
+%% This command is for the conference information
+\conference{Joint Workshop on Statistics and Knowledge Integration for Logic, Learning, Ethical Decisions, and LLMs (SKILLED-LLMs 2026)}
+
+%%
+%% The "title" command
+\title{Neuro-Symbolic Injection of LTLf Constraints in Autoregressive Reinforcement Learning Policies}
+
+\author{Anonymous Author}[%
+orcid=0000-0000-0000-0000,
+email=email.com
+]
+\address{Anonymous Institution}
+\begin{comment}
+    
+%%
+%% The "author" command and its associated commands are used to define
+%% the authors and their affiliations.
+\author{Ashkan Ansarifard}[%
+orcid=0009-0005-9247-1786,
+email=ansarifard.1970082@studenti.uniroma1.it
+]
+%\cormark[1]
+%\fnmark[1]
+\address{University of Rome La Sapienza, Rome, Italy}
+%\address[2]{Joint Institute for Nuclear Research, 6 Joliot-Curie, Dubna, Moscow region, 141980, Russian Federation}
+
+\author{Matteo Mancanelli}[%
+orcid=0009-0004-9547-7115,
+email=mancanelli@diag.uniroma1.it
+]
+%\fnmark[1]
+%\address[3]{Vrije Universiteit Amsterdam, De Boelelaan 1105, 1081 HV Amsterdam, The Netherlands}
+
+\author{Elena Umili}[%
+orcid=0000-0002-5639-6038,
+email=umili@diag.uniroma1.it
+]
+%\fnmark[1]
+%\address[4]{University of Skövde, Högskolevägen 1, 541 28 Skövde, Sweden}
+
+\author{Fabio Patrizi}[%
+orcid=0000-0002-9116-251X,
+email=patrizi@diag.uniroma1.it
+]
+\end{comment}
+
+%% Footnotes
+%\cortext[1]{Corresponding author.}
+%\fntext[1]{These authors contributed equally.}
+
+%%
+%% The abstract is a short summary of the work to be presented in the
+%% article.
 \begin{abstract}
-We study offline reinforcement learning (RL) under temporally extended task constraints expressed in Linear Temporal Logic over finite traces (\ltlf). Recently, transformer-based approaches such as Trajectory Transformers and Decision Transformers have been adopted to address RL as a sequence modeling problem.
+In this work we study offline reinforcement learning (RL) under temporally extended task constraints expressed in Linear Temporal Logic over finite traces (\ltlf). Recently, transformer-based approaches such as Trajectory Transformers and Decision Transformers have been adopted to address RL as a sequence modeling problem.
 %, enabling effective policy learning from fixed datasets. 
 However, these methods optimize purely for reward and do not account for high-level temporal requirements.
 %
 Here, we introduce a neurosymbolic framework that injects \ltlf background knowledge into such transformer-based RL policies. 
 Our approach compiles \ltlf formulas into deterministic finite automata (DFAs) and integrates them into the learning process through a differentiable representation and a logic-based loss function.
-In particular, we derive differentiable satisfaction signals from DFA progression and use them as a regularization term during training. We also perform automaton-aware constrained decoding at test time by tracking DFA states during trajectory generation. The resulting method is architecture-agnostic across different models.
+In particular, we derive differentiable satisfaction signals from DFA progression and use them as a regularization term during training. The resulting method is architecture-agnostic across different models.
 %
-We evaluate the proposed framework on a navigation environments with specification suites covering invariant safety, reachability, and a combination thereof. Experimental results show that incorporating background knowledge not only improves constraint satisfaction, but also maintains competitive return compared to vanilla baselines.
-
-\begin{comment}
-Our framework injects symbolic structure into transformer-based policies through automata-derived satisfaction signals and automaton-aware decoding/planning. We support both Trajectory Transformer (TT) and Decision Transformer (DT) families under a unified logic interface: exact finite-trace satisfaction for evaluation, differentiable soft satisfaction for training-time regularization, and constrained test-time decoding/action selection using DFA state tracking. We evaluate on several navigation environments with increasing complexity, with specification suites covering invariants, reachability, and temporally extended safety constraints (e.g., reach-while-safe and response-like formulas). 
-The experimental section is organized around (i) within-family comparisons (TT and DT baselines versus logic-enhanced variants), (ii) cross-family comparisons (TT vs.\ DT vs.\ logic-enhanced methods), (iii) trade-off and sensitivity analyses, and (iv) qualitative and automata diagnostics. We report standardized metrics for return, violation rate, and LTLf satisfaction, together with runtime overhead and benchmark-specific safety indicators, and provide plotting/aggregation artifacts for reproducible analysis. 
-\end{comment}
-%
-\keywords{Safe Reinforcement Learning, Neurosymbolic Knowledge Injection, Linear Temporal Logic}
+We evaluate the proposed framework on navigation environments with specification suites covering combinations of safety and reachability temporal properties. Experimental results show that incorporating background knowledge not only improves constraint satisfaction, but also maintains competitive return compared to vanilla baselines.
 \end{abstract}
-%
-%
-%
 
-\noindent
+%%
+%% Keywords. The author(s) should pick words that accurately describe
+%% the work being presented. Separate the keywords with commas.
+\begin{keywords}
+Safe Reinforcement Learning \sep
+Neurosymbolic Knowledge Injection \sep
+Linear Temporal Logic
+\end{keywords}
+
+%%
+%% This command processes the author and affiliation and title
+%% information and builds the first part of the formatted document.
+\maketitle
 
 
 \input{1_introduction}
@@ -93,64 +128,29 @@ The experimental section is organized around (i) within-family comparisons (TT a
 \input{7_conclusion}
 
 
-\begin{credits}
 
-\subsubsection{\ackname} This work has been supported by the the PNRR MUR project FAIR (No. PE0000013), and the Italian National Ph.D. on Artificial Intelligence at Sapienza University of Rome.
+%\begin{acknowledgments}
+%This work has been supported by the the PNRR MUR project FAIR (No. PE0000013), and the Italian National Ph.D. on Artificial Intelligence at Sapienza University of Rome. 
+%\end{acknowledgments}
 
-\begin{comment}
-\subsubsection{\discintname}
-It is now necessary to declare any competing interests or to specifically
-state that the authors have no competing interests. Please place the
-statement with a bold run-in heading in small font size beneath the
-(optional) acknowledgments\footnote{If EquinOCS, our proceedings submission
-system, is used, then the disclaimer can be provided directly in the system.},
-for example: The authors have no competing interests to declare that are
-relevant to the content of this article. Or: Author A has received research
-grants from Company W. Author B has received a speaker honorarium from
-Company X and owns stock in Company Y. Author C is a member of committee Z.
-\end{comment}
+%% The declaration on generative AI comes in effect
+%% in Janary 2025. See also
+%% https://ceur-ws.org/GenAI/Policy.html
+\section*{Declaration on Generative AI}
+%  {\em Either:}\newline
+%  The author(s) have not employed any Generative AI tools.
+%  \newline
 
-\subsubsection{\discintname}
-The authors have no competing interests to declare that are
-relevant to the content of this article.
+% \noindent{\em Or (by using the activity taxonomy in ceur-ws.org/genai-tax.html):\newline}
+During the preparation of this work, the authors used ChatGPT and Claude in order to: Improve writing style. 
+%Further, the author(s) used X-AI-IMG for figures 3 and 4 in order to: Generate images. 
+After using these services, the authors reviewed and edited the content as needed and take full responsibility for the publication's content. 
 
-\end{credits}
-
-
-%
-% ---- Bibliography ----
-%
-% BibTeX users should specify bibliography style 'splncs04'.
-% References will then be sorted and formatted in the correct style.
-%
-% \bibliographystyle{splncs04}
-% \bibliography{mybibliography}
-%
-
-\bibliographystyle{splncs04}
+%%
+%% Define the bibliography file to be used
 \bibliography{bibliography}
 
-\begin{comment}
-\begin{thebibliography}{8}
-\bibitem{ref_article1}
-Author, F.: Article title. Journal \textbf{2}(5), 99--110 (2016)
-
-\bibitem{ref_lncs1}
-Author, F., Author, S.: Title of a proceedings paper. In: Editor,
-F., Editor, S. (eds.) CONFERENCE 2016, LNCS, vol. 9999, pp. 1--13.
-Springer, Heidelberg (2016). \doi{10.10007/1234567890}
-
-\bibitem{ref_book1}
-Author, F., Author, S., Author, T.: Book title. 2nd edn. Publisher,
-Location (1999)
-
-\bibitem{ref_proc1}
-Author, A.-B.: Contribution title. In: 9th International Proceedings
-on Proceedings, pp. 1--2. Publisher, Location (2010)
-
-\bibitem{ref_url1}
-LNCS Homepage, \url{http://www.springer.com/lncs}, last accessed 2023/10/25
-\end{thebibliography}
-\end{comment}
-
 \end{document}
+
+%%
+%% End of file

@@ -1,0 +1,93 @@
+flowchart TD
+    A([DT experiment starts]) --> B["scripts/train_dt.py"]
+    B --> C["Build offline source"]
+    C --> C1{"--env"}
+    C1 --> CB["ColourBomb episodes"]
+    C1 --> FL["FrozenLake episodes"]
+    C1 --> DSRL["DSRL episodes"]
+    C1 --> AM["AntMaze skipped in DT v1"]
+
+    CB --> Base["Base episode dataset"]
+    FL --> Base
+    DSRL --> Base
+    AM --> Skip["write skip metrics"]
+
+    Base --> Artifact["Save dataset artifact<br/>NPZ + metadata"]
+    Base --> DTData["DTSequenceDataset"]
+    DTData --> Rows["Strip END row"]
+    Rows --> Extract["Extract state_t and action_t"]
+    Extract --> RTG["Compute return-to-go"]
+    RTG --> Windows["Fixed context windows"]
+    Windows --> Inputs["Model inputs:<br/>states, previous actions, RTG, timesteps, mask"]
+    Windows --> Targets["Targets:<br/>current action_t"]
+
+    Inputs --> Model["DecisionTransformerDiscrete"]
+    Model --> Emb["state embedding + previous-action embedding + RTG linear + time embedding"]
+    Emb --> Causal["Causal transformer encoder"]
+    Causal --> Logits["Action logits"]
+    Logits --> CE["action_CE<br/>cross entropy vs target actions"]
+    Targets --> CE
+
+    Logits --> LogicSwitch{"--logic_alpha > 0?"}
+    LogicSwitch -->|No| ZeroLogic["logic_loss = 0"]
+    LogicSwitch -->|Yes| DynBuild["build_tabular_dynamics"]
+    DynBuild --> DynSource{"Dynamics source priority"}
+    DynSource --> EnvP["Env transition table P<br/>when exposed"]
+    DynSource --> GridRules["Grid movement rules<br/>when available"]
+    DynSource --> Counts["Dataset transition counts<br/>fallback"]
+    EnvP --> TransProb["transition_probs[a, s, s_next]"]
+    GridRules --> TransProb
+    Counts --> TransProb
+    Base --> Hazard["hazard_mask_for_env"]
+    Hazard --> Penalty["compute_dt_logic_rollout_penalty"]
+    TransProb --> Penalty
+    Logits --> Policy["softmax action probabilities"]
+    Inputs --> KnownStates["known dataset states"]
+    Policy --> Penalty
+    KnownStates --> Penalty
+    Penalty --> LogicLoss["logic_loss = expected short-horizon hazard occupancy"]
+
+    CE --> Total["loss = action_CE + logic_alpha * logic_loss"]
+    ZeroLogic --> Total
+    LogicLoss --> Total
+    Total --> Step["backprop, grad clip, AdamW"]
+    Step --> Checkpoint["dt_state_epoch.pt"]
+
+    Checkpoint --> Eval["scripts/eval_dt.py or post-train eval"]
+    Eval --> FormulaSwitch{"--spec or --ltl_formula(s) provided?"}
+    FormulaSwitch -->|No| NoDFA["No DFA satisfaction<br/>policy metrics only"]
+    FormulaSwitch -->|Yes| BuildDFA["Reuse TT adapter + DFA builder"]
+    BuildDFA --> RawDFA["Raw DFA"]
+    RawDFA --> DTDecode{"--dt_mode"}
+    NoDFA --> DTDecode
+    DTDecode --> Greedy["greedy"]
+    DTDecode --> Constrained["constrained lookahead"]
+    DTDecode --> KNN["kNN suffix memory"]
+    Constrained --> Candidates["topk or sample action candidates"]
+    Candidates --> Sim["simulate env lookahead"]
+    Sim --> Advance["advance DFA state with transition tokens"]
+    Advance --> Prune["prune reject sink or hazard terminal"]
+    Prune --> Rerank["reward + logprob + satisfaction bonus"]
+    Greedy --> Execute["execute action in env"]
+    Rerank --> Execute
+    KNN --> Execute
+    Execute --> Trace["Executed trajectory tokens"]
+    Trace --> End["Append END row"]
+    End --> Sat["Hard DFA satisfaction when DFA exists"]
+    End --> SoftSat["Soft DeepDFA satisfaction when available"]
+    End --> Metrics["return, goal rate, hazard rate, violation rate"]
+    Sat --> Outputs["metrics.json, automaton_rollout_stats.json"]
+    SoftSat --> Outputs
+    Metrics --> Outputs
+
+    classDef process fill:#ecfeff,stroke:#0891b2,color:#083344
+    classDef decision fill:#fef9c3,stroke:#ca8a04,color:#422006
+    classDef model fill:#f0fdf4,stroke:#16a34a,color:#052e16
+    classDef logic fill:#fff7ed,stroke:#ea580c,color:#431407
+    classDef output fill:#f1f5f9,stroke:#475569,color:#0f172a
+
+    class B,C,CB,FL,DSRL,Base,Artifact,DTData,Rows,Extract,RTG,Windows,Inputs,Targets,DynBuild,EnvP,GridRules,Counts,TransProb,Hazard,Policy,KnownStates,Step,Eval,Candidates,Sim,Execute,Trace,End process
+    class Model,Emb,Causal,Logits,CE,ZeroLogic,Penalty,LogicLoss,Total model
+    class BuildDFA,RawDFA,Advance,Prune,Rerank,Sat,SoftSat logic
+    class C1,LogicSwitch,DynSource,FormulaSwitch,DTDecode decision
+    class AM,Skip,Checkpoint,NoDFA,Greedy,Constrained,KNN,Metrics,Outputs output

@@ -1,44 +1,70 @@
-\section{Experimental Setup}
+\section{Experimental Evaluation}
 
-\subsection{Benchmark and Run Scope}
-This version reports only the completed \textbf{ColourBomb (CB)} experiments available under \texttt{runs/cb}. We focus on the alpha-sensitivity blocks:
+To evaluate the proposed framework, we conduct experiments\footnote{The code is publicly available at: https://github.com/ashkanans/nesy\_rl\_test.} on a controlled navigation benchmark designed to simulate safety-critical decision making under temporally extended constraints. The experiments focus on understanding how the proposed logic regularization influences the behavior of transformer-based policies and how different levels of logical guidance affect the trade-off between task performance and constraint satisfaction.
+
+\subsection*{Environment}
+
+We evaluate our approach on the ColourBomb environment \cite{prob_shielding_AAAI25}, a grid-based navigation domain illustrated in Figure \ref{fig:cb_env_layout}.
+The environment contains:
+%
 \begin{itemize}
-\item \texttt{runs/cb/alpha\_sens\_avoid\_bombs\_greedy\_s\{0,1,2\}}
-\item \texttt{runs/cb/alpha\_sens\_reach\_goal\_while\_safe\_greedy\_s\{0,1,2\}}
+    \item \textbf{Start cell (S): } the initial location of the agent.
+    \item \textbf{Goal cells (P/Y/U): } terminal states (identified by different colours) that provide positive reward and end the episode.
+    \item \textbf{Bomb cells (B): } hazardous states that terminate the episode with negative reward.
+    \item \textbf{Walls (W): } non-traversable cells that block movement.
 \end{itemize}
 
-CB is a gridworld with bombs (hazards), walls (blocked cells), start state, and multiple terminal goal cells. Episodes are finite-horizon, with per-step penalty, positive terminal goal reward, and negative terminal bomb reward.
-
-\begin{figure}[t]
+\begin{figure}[!th]
 \centering
-\includegraphics[width=0.72\linewidth]{figures/colourbomb/cb_environment_layout.png}
-\caption{ColourBomb environment structure. Bomb cells are hazards, walls are non-traversable, and reaching any goal terminal ends the episode.}
+\includegraphics[width=0.68\linewidth]{figures/colourbomb/cb_environment_layout.png}
+\caption{ColourBomb environment structure.}
 \label{fig:cb_env_layout}
 \end{figure}
 
-\subsection{Specifications}
-We evaluate two named presets that are available in the executed runs:
+The agent must navigate from the start location toward one of the goal cells while avoiding bombs and obstacles. The environment is episodic with a finite horizon. Each step incurs a small penalty to encourage efficient navigation, while reaching a goal yields positive reward and entering a bomb cell yields negative reward. This environment is particularly suitable for testing our framework, and its flexibility enables the construction of different \ltlf constraints with increasing levels of complexity.
+
+\subsection*{Temporal Specifications}
+
+We evaluate the system using two representative families of \ltlf specifications:
+
 \begin{itemize}
-\item \texttt{avoid\_bombs}: invariant safety ($G(\neg \texttt{bomb})$)
-\item \texttt{reach\_goal\_while\_safe}: reachability with safety ($F(\texttt{goal}) \wedge G(\neg \texttt{bomb})$)
+    \item \textbf{Safety:} requires the agent to avoid bomb cells throughout the entire trajectory
+\[
+G(\neg bomb)
+\]
+    \item \textbf{Reach-while-Safe:} requires the agent to eventually reach a goal while always avoiding bomb
+\[
+G(\neg bomb) \land F(goal)
+\]
 \end{itemize}
 
-\subsection{Methods and Hyperparameters}
-We compare TT variants with greedy decoding:
-\begin{itemize}
-\item \textbf{Vanilla TT}: \texttt{alpha=0.0}
-\item \textbf{Logic-regularized TT}: \texttt{alpha} in $\{0.01, 0.05, 0.1, 0.2, 0.4\}$
-\end{itemize}
-All reported values are aggregated over seeds $\{0,1,2\}$ from the completed runs.
+\noindent
+Note that $F(goal)$ is a liveness property in temporal logics terminology. Note also that, since we assume \emph{(i)} goal is terminal, \emph{(ii)} goal is not a bomb, and \emph{(iii)} traces stop when goal is reached, then we could rewrite the constraint as $(\neg bomb) \,U\, goal$,
+which ensures that the agent remains in safe states until a goal is reached. We show the automata for to these two specifications in Fig. \ref{fig:dfas}.
 
-\subsection{Metrics and Aggregation}
-For each run directory we read \texttt{baseline\_metrics.csv}. Primary metrics are:
-\texttt{return\_mean}, \texttt{satisfaction\_rate}, \texttt{violation\_rate}, \texttt{goal\_rate}, and \texttt{bomb\_hit\_rate}.
-We then aggregate by (spec, baseline) using mean and standard deviation across the three seeds.
 
-To ensure reproducibility of figures/tables in this section, we provide a deterministic post-processing script: \texttt{build\_cb\_figures.py} (under \texttt{paper/scripts}).
-It writes:
+\noindent
+These specifications allow us to analyze the behavior of the method under both purely safety-oriented and mixed safety-and-performance objectives. One could also consider more complex formulas, for instance requiring the agent to visit coloured states in a given order.
+Notably, our framework goes beyond most papers on Safe RL, allowing the specification of arbitrary temporal constraints. In future work, we aim to explore the use of combined formulas drawn from \textit{Declare} patterns~\cite{declare2006}.
+
+\begin{figure}[!th]
+\centering
+\includegraphics[width=0.34\linewidth]{figures/safe_dfa2.png}
+\includegraphics[width=0.65\linewidth]{figures/reach_while_safe_dfa.png}
+\caption{DFAs for Safety and Reach-while-Safe constraints}
+\label{fig:dfas}
+\end{figure}
+
+\subsection*{Methods Compared}
+
+We evaluate variants of the Trajectory Transformer and Decision Transformer architectures with different levels of logical regularization. We consider vanilla TT and DT as the baseline model, without any logical regularization. This corresponds to setting $\alpha=0$ to Equation \ref{eq:loss_balance}. Then, we impose logic regularization, that is, the training objective combines the standard sequence-prediction loss with the proposed logic loss computed by the use of differentiable DFAs. In order to control the weight of logic regularization and study how it affects return and constraint satisfaction, we vary the trade-off parameter $\alpha \in \{0.01,0.05,0.1,0.2,0.4, 0.6, 0.8\}$. All models use greedy decoding at inference time to isolate the effect of the logic regularization during training. 
+
+\subsection*{Evaluation Metrics}
+
+We evaluate policies using several metrics capturing both task performance and logical compliance:
 \begin{itemize}
-\item seed-level and aggregated CSVs under \texttt{paper/tables/colourbomb}
-\item figure PNGs under \texttt{paper/figures/colourbomb}
+    \item \textbf{Return: } the average episodic reward obtained by the agent.
+    \item \textbf{Satisfaction Rate: } the fraction of trajectories that satisfy the \ltlf specification when evaluated using the compiled DFA.
+    \item \textbf{Goal Rate: } the proportion of episodes in which the agent successfully reaches a goal state.
+    \item \textbf{Bomb Hit Rate: } the fraction of trajectories that terminate by entering a bomb cell.
 \end{itemize}

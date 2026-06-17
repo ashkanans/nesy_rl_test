@@ -1,9 +1,11 @@
 \section{Method}
 \subsection{Problem Formulation}
-In offline RL, the agent is provided with a fixed dataset of previously collected trajectories.
+In offline RL, the agent is provided with a fixed dataset $\mathcal{D}=\{\boldsymbol{\tau}^{(i)}\}_{i=1}^N$ of previously collected trajectories.
 %Let $\mathcal{D}=\{\boldsymbol{\tau}^i\}_{i=1}^N$ be an dataset of trajectories. Each trajectory is a finite sequence of transitions and terminal marker, i.e. it has the form of (\ref{eq:trace_form}) plus a special symbol $\texttt{END}$ at the end of the trace. At each timestamp, together with state dimensions, action dimensions and rewards, we can have an optional environment-specific auxiliary fields (e.g., safety cost).
-Let $\mathcal{D}=\{\boldsymbol{\tau}^i\}_{i=1}^N$ be an dataset of trajectories. Each trajectory is a finite sequence of transitions and an \emph{end-of-trace} symbol $\texttt{EOT}$, i.e. $\boldsymbol{\tau} = (y^1,\ldots,y^T,\texttt{EOT})$, where each transition token $y^j$ group encodes state, action, reward, and optional environment-specific auxiliary fields (e.g., safety cost). 
-In addition to the return signal, here we add also some prior knowledge about the task, expressed as \ltlf constraints, to capture high-level behavioral requirements. Given an \ltlf formula $\varphi$, our objective is to learn a trajectory generation policy that maximizes both the expected return of the policy and the probability that generated trajectories satisfy $\varphi$.
+%Let $\mathcal{D}=\{\boldsymbol{\tau}^{(i)}\}_{i=1}^N$ be a dataset of trajectories. 
+Each trajectory is a finite sequence of transitions and an \emph{end-of-trace} symbol $\texttt{EOT}$, i.e. $\boldsymbol{\tau} = (y^1,\ldots,y^T,\texttt{EOT})$, where each transition token $y^j$ group encodes state, action, reward, and optional environment-specific auxiliary fields (e.g., safety cost). 
+%In addition to the return signal, 
+Here, we also consider some prior knowledge about the task, expressed as \ltlf constraints, to capture high-level behavioral requirements. Given an \ltlf formula $\varphi$, our objective is to learn a trajectory generation policy that maximizes both the expected return of the policy and the probability that generated trajectories satisfy $\varphi$.
 %
 We define atomic propositions through an environment-specific extractor 
 \[
@@ -11,9 +13,10 @@ We define atomic propositions through an environment-specific extractor
 \]
 %
 \noindent
-and the \ltlf formula $\varphi$ is defined over these propositions. Note that, in our experiments, proposition extraction is primarily \textit{state-centric}, meaning that $\varphi$ is defined only over state dimensions, but our approach is fully general and supports also imposing constraints on action, state-action pairs and auxiliary-terms.
+and the \ltlf formula $\varphi$ is defined over these $K$ propositional symbols. Note that, in our experiments, proposition extraction is \textit{state-centric}, i.e. $\varphi$ is defined only over state dimensions, but our approach is fully general and supports also imposing constraints on action, state-action pairs and auxiliary-terms.
 
-A logic adapter is used to define the authoritative token schema and the unique end token identifier shared by dataset builders, token-to-symbol mapping, DFA rollout, and logic-loss evaluation. Full episodes contain exactly one explicit end row; sliding training windows may omit the end marker if they are strict subsegments. Canonical satisfaction evaluation is defined on complete finite traces, and traces without an end marker are treated as incomplete and unsatisfied in canonical mode. This design avoids inconsistent termination handling across modules and ensures agreement between hard DFA evaluation and differentiable soft evaluation.
+A logic adapter is used to define the authoritative token schema and the unique end token identifier shared by dataset builders, token-to-symbol mapping, DFA rollout, and logic-loss evaluation. 
+Satisfaction evaluation follows the standard \ltlf semantics (see Sec. \ref{sec:ltlf}) and is therefore defined on complete finite traces; traces without an end marker are treated as incomplete and unsatisfied. This design avoids inconsistent termination handling across modules and ensures agreement between hard DFA evaluation and differentiable soft evaluation.
 
 As explained in the background, we assume an autoregressive neural model $f_\theta$ with trainable parameters $\theta$ that estimates an approximation $P_\theta$ of the probability of the next event $\tau_t$ given a trace of previous events $\boldsymbol{\tau}_{<t}$ (Equation~\ref{eq:next_act_pred}):
 \begin{equation} 
@@ -25,11 +28,11 @@ As explained in the background, we assume an autoregressive neural model $f_\the
 \end{array}
 %\]
 \end{equation}
-Note that we do not make any assumptions about the neural model, except that it can estimate the probability of the next activity given a sequence of previous ones. As a result, our approach is entirely \textit{model-agnostic} and can be readily applied to any autoregressive model (providing the fact that the logic adapter is changed consistently). The model parameters are typically trained using a supervised loss $L_{\mathcal{D}}$, evaluated on a dataset $\mathcal{D}$ of ground-truth traces obtained by observing the process. The loss for a trace $\boldsymbol{\tau} \in \mathcal{D}$ of length $T$ is defined as follows:
+Note that we do not make any assumptions about the neural model, except that it can estimate the probability of the next activity given a sequence of previous ones. As a result, our approach is entirely \textit{model-agnostic} and can be readily applied to any autoregressive model (provided that the logic adapter is changed consistently). The model parameters are typically trained using a supervised loss $L_{\mathcal{D}}$, evaluated on a dataset $\mathcal{D}$ of ground-truth traces obtained by observing the process. The loss for a trace $\boldsymbol{\tau} \in \mathcal{D}$ of length $T$ is defined as follows:
 \begin{equation} \label{eq:sup_loss}
     L_{\mathcal{D}}(\boldsymbol{\tau}) = \frac{1}{T} \sum_{t=1}^T \text{cross-entropy}(f_\theta(\boldsymbol{\tau}_{<t}), \tau_{t}) .
 \end{equation}
-This loss trains the network to predict the next symbol in a trace so as to closely mimic the data in the dataset.
+%This loss trains the network to predict the next symbol in a trace so as to closely mimic the data in the dataset.
 
 Here, the goal is 
 %Our goal is for the language generated by the autoregressor $f_\theta$ to be strictly contained within the language of strings accepted by the \ltlf formula $\varphi$, denoted as $\calL(A_{\varphi})$. However, the language produced by the network is \emph{unbounded}, as it is only \emph{softly assigned}: in other words, the network can generate any possible string, each with a different probability.
@@ -64,14 +67,14 @@ Here we adapt the logic loss computation to offline RL domains and apply it at t
 
 \subsection{Automata-Based Satisfaction and Logic Loss}
 
-Now, we can briefly discuss how it is possible to approximate the target probability in Equation \ref{eq:logic_prob}. Specifically, it is possible to use a Monte Carlo estimation by sampling a set of complete traces $\{\boldsymbol{\tau}^{(1)}, \boldsymbol{\tau}^{(2)}, \ldots, \boldsymbol{\tau}^{(N)}\} \sim P_\theta$ according to the distribution learned by the autoregressor, and compute an approximation of the target probability as follows:
+Now, we briefly discuss how to approximate the target probability in Equation \ref{eq:logic_prob}. Specifically, \cite{mezini2025neuro} uses a Monte Carlo estimation by sampling a set of complete traces $\{\boldsymbol{\tau}^{(1)}, \boldsymbol{\tau}^{(2)}, \ldots, \boldsymbol{\tau}^{(N)}\} \sim P_\theta$ according to the distribution learned by the autoregressor, and compute an approximation of the target probability as follows:
 \begin{equation} \label{eq:montecarlo_approx}
     \hat{P}_{\theta \vDash \varphi} = \frac{1}{N} \sum_{i=1}^N \mathbb{I} \{ \boldsymbol{\tau}^{(i)} \vDash \varphi \}.
 \end{equation}
 %
-Note that the sampled traces $\boldsymbol{\tau}^{(i)}$ are generated by a NN that returns a probability distribution at each time step, and thus they are replaced by a probabilistic counterpart $\tilde{\boldsymbol{\tau}}^{(i)}$, where symbols are sampled from that probability distribution. Moreover, the indicator function $\mathbb{I}$ in Equation~\ref{eq:montecarlo_approx} is replaced by a method that computes the (probabilistic) compliance of a probabilistic trace with the knowledge. To achieve this, it is possible to leverage on \emph{(i)} the Gumbel-Softmax sampling, to generate differentiable, near one-hot suffixes during training and \emph{(ii)} DeepDFA \cite{deepdfa_ecai2024}, a neurosymbolic framework that encodes temporal logic properties as a recurrent layer, enabling efficient and differentiable evaluation of logical constraints.
+Note that the sampled traces $\boldsymbol{\tau}^{(i)}$ are generated by a NN that returns a probability distribution at each time step, and thus they are replaced by a probabilistic counterpart $\tilde{\boldsymbol{\tau}}^{(i)}$, where symbols are sampled from that probability distribution. Moreover, the indicator function $\mathbb{I}$ in Equation~\ref{eq:montecarlo_approx} is replaced by a method that computes the (probabilistic) compliance of a probabilistic trace with the knowledge. To achieve this, we can leverage on \emph{(i)} the Gumbel-Softmax sampling, that generates differentiable, near one-hot suffixes during training and \emph{(ii)} DeepDFA \cite{deepdfa_ecai2024}, that encodes temporal logic properties as a recurrent layer, enabling efficient and differentiable evaluation of logical constraints.
 
-\paragraph{Gumbel-Softmax sampling.} In order to sample from the probability distribution returned by a NN, but still maintain differentiability, we can use the Gumbel-Softmax reparametrization trick, which produces approximations of discrete symbols as one-hot-like vectors. Given the predicted token distribution $\tilde{y}_t$, we get 
+\paragraph{Gumbel-Softmax sampling.} To sample from the probability distribution returned by a NN, but still maintain differentiability, we can use the Gumbel-Softmax sampling, which produces approximations of discrete symbols as one-hot-like vectors. Given the predicted token distribution $\tilde{y}_t$, we get 
 \begin{equation}
 \tilde{x}_t = \text{softmax} \left( \frac{\log (\tilde{y}_t) +G}{temp} \right)
 \end{equation}
@@ -80,35 +83,8 @@ Note that the sampled traces $\boldsymbol{\tau}^{(i)}$ are generated by a NN tha
 where $G$ is a Gumbel noise vector and $temp$ is a temperature parameter controlling the sharpness of the distribution. These soft tokens are then fed into the differentiable DFA, which computes the probability that the sampled trajectory satisfies the LTLf specification. As $temp \rightarrow 0$, the output approaches a discrete one-hot vector, while for $temp = 1$, it remains close to the original continuous probabilities in $\tilde{y}_t$. Since the next activity is only \emph{probabilistically} grounded, we denote it as $\tilde{\tau}_t$.
 
 \paragraph{DeepDFA.}
-Each \ltlf constraint $\varphi$ can be compiled into an equivalent DFA 
-\[
-A_\varphi = (\Sigma, Q, q_0, \delta, F)
-\]
-%
-\noindent
-where $\Sigma$ is the alphabet, $Q$ is the set of states, $q_0$ is the initial state, $\delta$ is the transition function, and $F$ is the set of accepting states. There exists automatic translation tools, such as \texttt{ltlf2DFA}~\cite{fuggitti-ltlf2dfa}, that can be used off-the-shelf. We extend the DFA to handle the special $\texttt{EOT}$ symbol, such that only traces including $\texttt{EOT}$ are accepted. Given a trace of symbols $\boldsymbol{\sigma}$, the automaton processes the corresponding sequence of symbols and determines whether the trajectory satisfies the specification:
-\[
-\boldsymbol{\sigma} \models \varphi \text{ if and only if } \delta^*(q_0, \boldsymbol{\sigma}) \in F
-\]
-
-\textcolor{blue}{***}
-
-We expose two aligned satisfaction interfaces:
-
-\paragraph{Hard path.}
-Given token IDs, we map each timestep to a symbol ID and roll the DFA exactly, returning Boolean acceptance per trajectory.
-
-\paragraph{Soft path.}
-Given token probability distributions, we aggregate token probabilities into symbol probabilities and perform a soft DFA rollout to obtain an acceptance probability in $[0,1]$:
-\[
-P_t(s)=\sum_{\textcolor{blue}{k:m_t(k)=s}} p_t(k), \qquad \textcolor{blue}{\hat{S}_\varphi(\tau)\in[0,1]}.
-\]
-\textcolor{blue}{Ele: define things in blue in previous equation}
-One-hot token distributions recover the hard-path result up to numerical tolerance.
-
-\textcolor{blue}{***}
-
-Many alternatives exist in the literature to evaluate continuous satisfaction of temporal constraints over sequences of \textit{soft} (probabilistic or fuzzy) symbol assignments \cite{umili_kr23,deepdfa_ecai2024,DonadelloFIMM25,NesyA}. In our work we used DeepDFA, following what has been done in \cite{UmiliPMAI24,mezini2025neuro}. DeepDFA is a neural, probabilistic relaxation of a standard DFA, where the automaton is represented in matrix form and the input symbols, states, and outputs are \textit{probabilistically grounded}. This allows us to compute the probabilistic compliance $P_{\mathrm{DDFA}}(\tilde{\boldsymbol{\tau}}^{(i)} \vDash \varphi)$ of a sampled trace $\tilde{\boldsymbol{\tau}}^{(i)}$ with the knowledge $\varphi$. Therefore, Equation~\ref{eq:montecarlo_approx} becomes:
+As explained in Sec. \ref{sec:ltlf}, each \ltlf constraint $\varphi$ can be compiled into an equivalent DFA $A_\varphi$. We extend the DFA to handle the special $\texttt{EOT}$ symbol, such that only traces including $\texttt{EOT}$ are accepted. There exists automatic translation tools, such as \texttt{ltlf2DFA}~\cite{fuggitti-ltlf2dfa}, that can be used off-the-shelf.
+Many alternatives exist in the literature to evaluate continuous satisfaction of temporal constraints over sequences of \textit{soft} (probabilistic or fuzzy) symbol assignments \cite{umili_kr23,deepdfa_ecai2024,DonadelloFIMM25,NesyA}. In our work we used DeepDFA \cite{deepdfa_ecai2024}, following what has been done in \cite{UmiliPMAI24,mezini2025neuro}. DeepDFA is a neural, probabilistic relaxation of a standard DFA, where the automaton is represented in matrix form and the input symbols, states, and outputs are \textit{probabilistically grounded}. This allows us to compute the probabilistic compliance $P_{\mathrm{DDFA}}(\tilde{\boldsymbol{\tau}}^{(i)} \vDash \varphi)$ of a sampled trace $\tilde{\boldsymbol{\tau}}^{(i)}$ with the knowledge $\varphi$. Therefore, Equation~\ref{eq:montecarlo_approx} becomes:
     \begin{equation} \label{eq:montecarlo_approx_ddfa}
     \hat{P}_{\theta \vDash \varphi} = \frac{1}{N} \sum_{i=1}^N P_{\mathrm{DDFA}}(\tilde{\boldsymbol{\tau}}^{(i)} \vDash \varphi).
 \end{equation}
@@ -118,7 +94,7 @@ Finally, we are able to compute the logic loss $L_\varphi$, which enforces the s
 \begin{equation}
 L_\varphi = - \log \left( \hat{P}_{\theta \vDash \varphi} \right).
 \end{equation}
-and we use it in Equation \ref{eq:loss_balance}.
+%and we use it in Equation \ref{eq:loss_balance}. 
 
 \begin{comment}
 \subsection{TT: Logic-Regularized Training and Automaton-Aware Decoding}

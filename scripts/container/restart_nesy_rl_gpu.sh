@@ -51,6 +51,32 @@ if [[ ! -d "$HOST_REPO" ]]; then
 fi
 
 GPU_ARGS=(--gpus all -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=compute,utility)
+TELEGRAM_ARGS=(-e "AUTO_START_TELEGRAM_CB_HOURLY=${AUTO_START_TELEGRAM_CB_HOURLY:-1}")
+
+if [[ -n "${TELEGRAM_API_ID:-}" && -n "${TELEGRAM_API_HASH:-}" && -n "${TELEGRAM_PHONE:-}" && -n "${TELEGRAM_GROUP_ID:-}" ]]; then
+  TELEGRAM_ARGS+=(
+    -e "TELEGRAM_API_ID=${TELEGRAM_API_ID}"
+    -e "TELEGRAM_API_HASH=${TELEGRAM_API_HASH}"
+    -e "TELEGRAM_PHONE=${TELEGRAM_PHONE}"
+    -e "TELEGRAM_GROUP_ID=${TELEGRAM_GROUP_ID}"
+  )
+  if [[ -n "${TELEGRAM_CB_HOURLY_INTERVAL_SEC:-}" ]]; then
+    TELEGRAM_ARGS+=(-e "TELEGRAM_CB_HOURLY_INTERVAL_SEC=${TELEGRAM_CB_HOURLY_INTERVAL_SEC}")
+  fi
+  if [[ -n "${TELEGRAM_CB_HOURLY_SESSION:-}" ]]; then
+    TELEGRAM_ARGS+=(-e "TELEGRAM_CB_HOURLY_SESSION=${TELEGRAM_CB_HOURLY_SESSION}")
+  fi
+  if [[ -n "${TELEGRAM_CB_HOURLY_LOG_FILE:-}" ]]; then
+    TELEGRAM_ARGS+=(-e "TELEGRAM_CB_HOURLY_LOG_FILE=${TELEGRAM_CB_HOURLY_LOG_FILE}")
+  fi
+  if [[ -n "${TELEGRAM_CB_HOURLY_PID_FILE:-}" ]]; then
+    TELEGRAM_ARGS+=(-e "TELEGRAM_CB_HOURLY_PID_FILE=${TELEGRAM_CB_HOURLY_PID_FILE}")
+  fi
+  echo "[info] Telegram autostart env detected and will be forwarded to container."
+else
+  echo "[warn] Telegram vars not fully set on host; hourly bot will not send messages."
+fi
+
 if ! command -v nvidia-smi >/dev/null 2>&1; then
   if [[ "$ALLOW_NO_GPU" -eq 1 ]]; then
     echo "[warn] nvidia-smi not found on host; continuing without GPU runtime (local test mode)."
@@ -74,6 +100,7 @@ docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 docker run -d \
   --name "$CONTAINER_NAME" \
   "${GPU_ARGS[@]}" \
+  "${TELEGRAM_ARGS[@]}" \
   -e PYTHONUNBUFFERED=1 \
   -v "$HOST_REPO":/workspace/nesy_rl:rw \
   -w /workspace/nesy_rl \

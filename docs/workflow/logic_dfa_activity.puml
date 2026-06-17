@@ -1,0 +1,70 @@
+@startuml
+title LTLf / DFA Data Flow Activity
+
+start
+:Receive experiment args;
+if (Logic source?) then (--spec)
+  :Load preset from specs registry;
+elseif (--ltl_formula)
+  :Use single manual formula;
+else (--ltl_formulas)
+  :Use list of manual formulas;
+endif
+
+:Build dataset and read token schema;
+:Create TTDFAAdapter;
+note right
+Maps model token IDs to symbolic propositions:
+s0_binK, a0_binK, r_binK, v_binK, end
+end note
+
+:For each formula, build DFA;
+if (dfa_backend?) then (template)
+  :Use supported hand-built DFA;
+elseif (ltlf)
+  :Use generic LTLf compilation;
+else (auto)
+  :Try template, then generic LTLf;
+endif
+
+if (Multiple formulas?) then (yes)
+  if (dfa_mode?) then (product)
+    :Build product DFA;
+  elseif (multi)
+    :Keep component DFAs;
+  else (single)
+    :Use first DFA;
+  endif
+else (no)
+  :Use single DFA;
+endif
+
+:Convert raw DFA to DeepDFA when needed;
+
+fork
+  :Hard satisfaction path;
+  :Normalize token trace;
+  :Require exactly one END;
+  :token_ids_to_symbol_ids;
+  :DFA accepts_from_state;
+  :Return true or false;
+fork again
+  :Soft satisfaction path;
+  :token_probs_to_symbol_probs;
+  :Normalize or append END;
+  :DeepDFA.forward_pi;
+  :Return acceptance probability;
+fork again
+  :Constrained decoding path;
+  :Track current DFA state;
+  :Advance state after decoded transition tokens;
+  if (Reject sink?) then (yes)
+    :Prune or penalize candidate;
+  else (no)
+    :Keep candidate;
+  endif
+end fork
+
+:Write metrics and automaton diagnostics;
+stop
+@enduml

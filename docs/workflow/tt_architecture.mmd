@@ -1,0 +1,68 @@
+flowchart TD
+    A([TT input batch]) --> X["X: token IDs<br/>shape [B, T]<br/>flattened transition stream"]
+    A --> Y["Y: next-token targets<br/>shape [B, T]"]
+    A --> Mask["mask: valid positions<br/>shape [B, T]"]
+
+    X --> Stream["Token stream layout<br/>state, action, reward, aux/cost, state, action, ..."]
+    Stream --> Offset["offset_tokens(idx)"]
+    Offset --> OffsetWhy["position-specific token vocabulary<br/>state token 5 != action token 5"]
+    OffsetWhy --> TokEmb["tok_emb<br/>Embedding(vocab_size * transition_dim + 1, n_embd)"]
+    X --> PosEmb["pos_emb<br/>learned [1, block_size, n_embd]"]
+    TokEmb --> Add["token embedding + position embedding"]
+    PosEmb --> Add
+    Add --> Drop["embedding dropout"]
+
+    Drop --> Blocks["n_layer GPT blocks"]
+    Blocks --> B1["LayerNorm"]
+    B1 --> Attn["Causal multi-head self-attention"]
+    Attn --> AttnMask["causal mask<br/>can only attend left/context"]
+    AttnMask --> Res1["residual add"]
+    Res1 --> B2["LayerNorm"]
+    B2 --> MLP["MLP<br/>Linear -> GELU -> Linear -> dropout"]
+    MLP --> Res2["residual add"]
+    Res2 --> Blocks
+
+    Blocks --> FinalLN["final LayerNorm"]
+    FinalLN --> Pad["pad_to_full_observation<br/>align to transition_dim"]
+    Pad --> Group["reshape to<br/>[(B*T'/transition_dim), transition_dim, n_embd]"]
+    Group --> Head["EinLinear head<br/>separate output projection per field position"]
+    Head --> Logits["logits<br/>shape [B, T, vocab_size + 1]"]
+
+    Logits --> SupCE["supervised next-token CE"]
+    Y --> SupCE
+    Mask --> SupCE
+    SupCE --> FieldWeights{"field weights enabled?"}
+    FieldWeights -->|Yes| Weighted["apply action_weight,<br/>reward_weight, value_weight"]
+    FieldWeights -->|No| Plain["plain masked CE"]
+    Weighted --> SupLoss["supervised_loss"]
+    Plain --> SupLoss
+
+    Logits --> LogicSwitch{"TT logic regularization"}
+    LogicSwitch --> Samples["Gumbel-Softmax samples<br/>[B, K, T, vocab]"]
+    Samples --> SymbolProbs["adapter.token_probs_to_symbol_probs"]
+    SymbolProbs --> End["append one END symbol"]
+    End --> DeepDFA["DeepDFA.forward_pi"]
+    DeepDFA --> Accept["acceptance probability per sample"]
+    Accept --> LogicLoss["logic_loss = -log(weighted expected acceptance)"]
+
+    SupLoss --> Total["total_loss<br/>(1-alpha)*supervised_loss + alpha*logic_loss"]
+    LogicLoss --> Total
+
+    Logits --> TrainOutput["Training output:<br/>logits + loss"]
+    Total --> TrainOutput
+    Logits --> Decode["Evaluation decoding uses logits<br/>to choose next token/action"]
+    Decode --> Rollout["execute in env"]
+    Rollout --> EvalDFA["append END, check DFA satisfaction"]
+    EvalDFA --> Metrics["metrics.json<br/>dfa_summary.json<br/>automaton_rollout_stats.json"]
+
+    classDef input fill:#eef6ff,stroke:#2563eb,color:#0f172a
+    classDef arch fill:#f0fdf4,stroke:#16a34a,color:#052e16
+    classDef logic fill:#fff7ed,stroke:#ea580c,color:#431407
+    classDef decision fill:#fef9c3,stroke:#ca8a04,color:#422006
+    classDef output fill:#f1f5f9,stroke:#475569,color:#0f172a
+
+    class A,X,Y,Mask,Stream input
+    class Offset,OffsetWhy,TokEmb,PosEmb,Add,Drop,Blocks,B1,Attn,AttnMask,Res1,B2,MLP,Res2,FinalLN,Pad,Group,Head,Logits,SupCE,Weighted,Plain,SupLoss arch
+    class LogicSwitch,Samples,SymbolProbs,End,DeepDFA,Accept,LogicLoss,EvalDFA logic
+    class FieldWeights decision
+    class Total,TrainOutput,Decode,Rollout,Metrics output

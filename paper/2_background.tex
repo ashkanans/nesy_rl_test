@@ -1,22 +1,43 @@
 \section{Background}
 \subsection{Linear Temporal Logic over finite traces}
+\label{sec:ltlf}
 
 Linear Temporal Logic (LTL) \cite{LTL} is a formal language that extends traditional propositional logic with modal operators, allowing the specification of rules that must hold \textit{through time}. Here, we use \ltl over finite traces (\ltlf) \cite{LTLf}, a popular variant of LTL which models finite, but length-unbounded, traces of executions, making it suitable for finite-horizon problems.
 %%
 Given a finite set $\Sigma$ of atomic propositions, the set of \ltlf formulas $\varphi$ is inductively defined as follows:
 %\begin{equation}
 \[
-    \varphi ::= \top \mid\bot\mid \sigma\mid\lnot\varphi\mid\varphi_1\land\varphi_2\mid X\varphi\mid\varphi_1 U\varphi_2,
+    \varphi ::= \top \mid
+    \bot
+    \mid 
+    a
+    \mid
+    \lnot\varphi
+    \mid
+    \varphi_1\land\varphi_2
+    \mid
+    X\varphi
+    \mid
+    \varphi_1 U\varphi_2,
 \]
 %\end{equation}
-where $\sigma \in \Sigma$. We use $\top$ and $\bot$ to denote $True$ and $False$, respectively. $X$ (Strong Next) and $U$ (Until) are temporal operators. Other temporal operators are $N$ (Weak Next) and $R$ (Release), defined as $N \varphi \equiv \neg X\neg\varphi$ and $\varphi_1 R \varphi_2 \equiv \neg(\neg\varphi_1 U \neg\varphi_2 )$; $G$ (globally) $G\varphi \equiv \bot R\varphi$; and $F$ (eventually) $F \varphi \equiv \top U \varphi$.
-
+where $a \in \Sigma$. We use $\top$ and $\bot$ to denote $True$ and $False$, respectively. $X$ (Strong Next) and $U$ (Until) are temporal operators. Other temporal operators are $N$ (Weak Next) and $R$ (Release), defined as $N \varphi \equiv \neg X\neg\varphi$ and $\varphi_1 R \varphi_2 \equiv \neg(\neg\varphi_1 U \neg\varphi_2 )$; $G$ (globally) $G\varphi \equiv \bot R\varphi$; and $F$ (eventually) $F \varphi \equiv \top U \varphi$.
 
 A trace $\boldsymbol{\sigma} = (\sigma_{1}, \sigma_{2}, \dots, \sigma_{T})$ is a sequence of propositional assignments to the propositions in $\Sigma$, where $\sigma_{t} \in 2^\Sigma$ is the set of all and only propositions that are true at instant $t$. Additionally, $|\boldsymbol{\sigma}| = T$ denotes the length of the trace. Since every trace is finite, $|\boldsymbol{\sigma}| < \infty$.
-If the propositional symbols in $\Sigma$ are all \textit{mutually exclusive}, i.e., the domain produces exactly one symbol true at each step, then we have $\sigma_{t} \in \Sigma$.
+Note that, if the propositional symbols in $\Sigma$ are all \textit{mutually exclusive}, i.e., the domain produces exactly one symbol true at each step, then we have $\sigma_{t} \in \Sigma$.
 %
-By $\boldsymbol{\sigma} \vDash \varphi$ we denote that the trace $\boldsymbol{\sigma}$ satisfies the \ltlf formula $\varphi$. 
-We refer the reader to \cite{LTLf} for a formal description of the \ltlf semantics. 
+Let $last = |\boldsymbol{\sigma}| - 1$. We inductively define when
+an \ltlf formula $\varphi$ is true at an instant $i$ (for $0 \leq i \leq last$), written $\boldsymbol{\sigma},i \models \varphi$, as follows:
+\begin{itemize}
+    \item $\boldsymbol{\sigma}, i \models a$ iff $a \in \boldsymbol{\sigma}_i$, for $a \in \Sigma$;
+    \item $\boldsymbol{\sigma}, i \models \neg \varphi$ iff $\boldsymbol{\sigma}, i \not\models \varphi$;
+    \item $\boldsymbol{\sigma}, i \models \varphi_1 \land \varphi_2$ iff $\boldsymbol{\sigma}, i \models \varphi_1$ and $\boldsymbol{\sigma}, i \models \varphi_2$;
+    \item $\boldsymbol{\sigma}, i \models X\varphi$ iff $i < last$ and  $\boldsymbol{\sigma}, i + 1 \models \varphi$;
+    \item $\boldsymbol{\sigma}, i \models \varphi_1 \muntil \varphi_2$ iff for some $j$ such that $i \leq j \leq last$, we have $\boldsymbol{\sigma}, j \models \varphi_2$, and for all $k$ such that $i \leq k < j$, we have $\boldsymbol{\sigma}, k \models \varphi_1$.
+\end{itemize}
+%
+\noindent
+We say that $\boldsymbol{\sigma}$ satisfies $\phi$, written $\boldsymbol{\sigma} \models \varphi$, if $\boldsymbol{\sigma}, 0 \models \varphi$. A formula $\varphi$ is satisfiable if it is true wrt some trace $\boldsymbol{\sigma}$, and is valid, if it is true wrt every trace $\boldsymbol{\sigma}$.
 
 Any \ltlf formula $\varphi$ can be translated into a Deterministic Finite Automaton (DFA) \cite{LTLf} $A_\varphi = (2^\Sigma, Q, q_0, \delta, F)$, where $2^\Sigma$ is the automaton alphabet, $Q$ is the finite set of states, $q_0 \in Q$ is the initial state, $\delta: Q \times 2^\Sigma \rightarrow Q$ is the transition function, and $F \subseteq Q$ is the set of final states. 
 Additionally, we recursively define the extended transition function over traces $\delta^*: Q \times (2^\Sigma)^* \rightarrow Q$ as:
@@ -30,7 +51,7 @@ Additionally, we recursively define the extended transition function over traces
 %\]
 \end{equation}
 where $\sigma \in 2^\Sigma$ is a symbol and $\boldsymbol{x} \in (2^\Sigma)^*$ is a trace.  
-The automaton accepts the trace $\boldsymbol{\sigma}$ if $\delta^*(q_0, \boldsymbol{\sigma}) \in F$, and in that case we say that $\boldsymbol{\sigma}$ belongs to the language of the automaton, denoted as $L(A_\varphi)$.  
+The automaton accepts the trace $\boldsymbol{\sigma}$ iff $\delta^*(q_0, \boldsymbol{\sigma}) \in F$, and in that case we say that $\boldsymbol{\sigma}$ belongs to the language of the automaton, denoted as $L(A_\varphi)$.  
 We have that $\varphi$ and $A_\varphi$ are equivalent because, for any trace $\boldsymbol{\sigma} \in (2^\Sigma)^*$:
 \begin{equation}
 %\[
@@ -66,10 +87,7 @@ sentations such as Moore machines [Camacho et al., 2019;
 De Giacomo et al., 2019].
 \end{comment}
 
-Traditional RL methods assume direct interaction with the environment during training. The agent collects experience by executing actions, observing state transitions and rewards, and updating its policy accordingly. This online interaction paradigm enables iterative improvement but may be costly, unsafe or even unfeasible in real-world applications. This motivates the study of offline RL \cite{levine2020offline}, where the agent is given a fixed dataset $\D$ of trajectories generated by some (unknown) behavior policy, and must learn a policy without additional environment interaction. Many offline RL algorithms incorporate mechanisms to constrain learned policies to remain close to the support of the data distribution. %This is necessary to mitigate distributional shift, since selecting actions that are poorly represented in the dataset may lead to inaccurate value estimates and degraded policy performance.
-%\textcolor{blue}{Ele: fino a qui basta, non abbiamo spazio per parlare di model free e model based}
-%In general, offline RL is addressed by two different families of approaches: model-free RL and model-based RL.
-%\textcolor{blue}{TODO: Complete it and put references.}
+Traditional RL methods assume direct interaction with the environment during training. The agent collects experience by executing actions, observing state transitions and rewards, and updating its policy accordingly. This online interaction paradigm enables iterative improvement but may be costly, unsafe or even unfeasible in real-world applications. This motivates the study of offline RL \cite{offline_rl_survey}, where the agent is given a fixed dataset $\D$ of trajectories generated by some (unknown) behavior policy, and must learn a policy without additional environment interaction. In order to prevent issues with out-of-distribution data, many offline RL algorithms incorporate mechanisms to constrain learned policies to remain close to the support data distribution \cite{kumar2020conservative}.
 
 \subsection{Reinforcement Learning as Sequence Modeling}
 
@@ -92,7 +110,7 @@ P(x_{t} \mid x_{1}, x_{2}, \dots, x_{t-1}) = P(x_{t} \mid \boldsymbol{x_{<t}}).
 %
 \noindent
 Instead of learning value functions or policies, one can learn the joint distribution
-\begin{equation}
+\begin{equation} \label{eq:seq_joint_prob}
 P(\boldsymbol{x}) = \prod_{i=1}^{|\tau|} P(x_{i} \mid \boldsymbol{x_{<i}}).
 \end{equation}
 
@@ -103,8 +121,8 @@ At each generation step, a token must be \textit{sampled} from the next activity
 \end{equation}
 %\]
 \noindent
-In general, this greedy search strategy is sub-optimal, because it may not produce the trace that maximizes the joint probability distribution. Other sub-optimal sampling strategies commonly used for this task include Beam Search, Random Sampling, and Temperature Sampling~\cite{ramamaneiro24}.
+In general, this greedy search strategy is sub-optimal, because it may not produce the trace that maximizes the joint probability distribution in Equation \ref{eq:seq_joint_prob}. Other sub-optimal sampling strategies commonly used for this task include Beam Search, Random Sampling, and Temperature Sampling~\cite{ramamaneiro24}.
 
 Trajectory Transformer (TT) models are transformer-based autoregressive architectures well suited for addressing RL as sequence modeling. In the offline setting, such models can be trained via maximum likelihood using teacher forcing, by maximizing the log-probability of trajectories in the dataset. At inference time, planning can be performed by sampling or beam search, optionally biasing candidate trajectories according to cumulative reward or reward-to-go estimates. This paradigm unifies dynamics modeling, policy learning, and behavior regularization within a single sequence model.
-
-Note that this approach focuses exclusively on maximizing return and modeling the data distribution, but they may violate safety or liveness constraints that naturally emerge from (or we want to impose to) the domain. This motivates our neurosymbolic framework guiding the learned trajectory distribution toward constraint satisfaction.
+%
+Note that this approach focuses exclusively on maximizing return and modeling the data distribution, but they may violate the constraints that emerge from (or we want to impose to) the domain. This motivates our neurosymbolic framework guiding the learned trajectory distribution toward constraint satisfaction.

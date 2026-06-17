@@ -1,26 +1,39 @@
-\section{Related Works}
-
-\begin{comment}
-
-\end{comment}
-
+\section{Related Work}
+ 
 \subsection{Offline RL as sequence modeling}
 
-Offline Reinforcement Learning \cite{levine2020offline} is frequently addressed by techniques that are based on value functions \cite{kostrikov2021offline}, dynamics estimation, goal-conditioned behavior cloning and reward-conditioned behavior cloning.
-As previously explained, recent works show how this problem can be tackled as a sequence model problem. \cite{emmons2021rvs} analyzes RL via supervised learning and shows when pure supervised learning is competitive wrt more complex architectures, given careful tuning of the policy capacity. In contrast, other recent works have adopted the use of Transformers \cite{transformers} as sequence prediction models, and they have provided a promising direction for offline RL, which is also flexible enough to be combined with mentioned techniques. In particular, TTs \cite{trajectory_transformers} and DTs \cite{decision_transformers} follow this idea by using beam-search planning and reward conditioning, respectively. Notably, these architectures are further studied combining techinques based on Dynamic Programming (such as Q-learning) \cite{yamagata2023q}, online fine-tuning \cite{zheng2022online}, few-shot policy generalization \cite{xu2022prompting}, and automatically-generated waypoints \cite{badrinath2023waypoint}. There are also works that does not build directly on TTs or DTs, such as \cite{huang2024diffusion}, where Transformers are used to overcome inefficiencies of Diffusion Models.
+Offline Reinforcement Learning \cite{offline_rl_survey} is frequently addressed by techniques that are based on value functions \cite{kumar2020conservative,kostrikov2021offline}, goal-conditioned behavior cloning \cite{nair2018visual,ding2019goal} and reward-conditioned behavior cloning \cite{kumar2019reward,srivastava2019training}.
+As previously explained, recent works show how this problem can be tackled as a sequence model problem. In \cite{emmons2021rvs} RL via supervised learning is analyzed, this work shows that sometimes pure supervised learning is competitive wrt more complex architectures, given careful tuning of the policy capacity. In contrast, other recent works have adopted the use of Transformers \cite{transformers} as sequence prediction models, and they have provided a promising direction for offline RL, which is also flexible enough to be combined with mentioned techniques. 
 
-\subsection{Safe RL and Shielding}
+In particular, Trajectory Transformers (TTs) \cite{trajectory_transformers} and Decision Transformers (DTs) \cite{decision_transformers} follow this idea by using beam-search planning and reward conditioning, respectively. Notably, these architectures are further studied combining techinques based on Dynamic Programming (such as Q-learning) \cite{yamagata2023q}, online fine-tuning \cite{zheng2022online}, few-shot policy generalization \cite{xu2022prompting}, and automatically-generated waypoints \cite{badrinath2023waypoint}. There are also works that does not build directly on TTs or DTs, such as \cite{huang2024diffusion}, where Transformers are used to overcome inefficiencies of Diffusion Models.
 
-Safe RL studies methods for ensuring that learned policies satisfy safety constraints during training or deployment. 
+\subsection{Safe Reinforcement Learning}
+
+Safe RL focuses on methods for ensuring that learned policies satisfy some given safety constraints. Online RL techniques \cite{achiam2017constrained,tessler2018reward} typically model safety requirements as constraints on the expected cost, and enforce safety through constrained optimization or Lagrangian formulations during policy learning. Recently, also offline Safe RL is gaining popularity, including techniques for both soft constraints \cite{xu2022constraints} and hard constraints \cite{zheng2024safe}. Adaptations of DTs and TTs are also studied in the context of offline Safe RL \cite{liu2023constrained,wang2024safe,guo2024temporal,zhang2023saformer}, confirming the growing interest in these models in recent years. These works share a common formulation grounded in Constrained MDPs, where safety is enforced by conditioning the policy on cost signals and constraint thresholds. Despite their differences, all these approaches operate by modifying the conditioning signals or relabeling trajectory returns to steer generation toward safe behavior. In contrast, our method leaves the trajectory data and its reward/cost structure untouched and instead regularizes the training objective with a differentiable logic loss derived from DFA progression, injecting temporal-logic knowledge directly into the learning process rather than into the data representation.
+Recent work \cite{tian2023reinforcement} also addresses RL using TTs and \ltlf constraints, but their approach differs from ours as it relies on reward shaping derived from DFA states to imitate trajectories.
+%They relies on reward shaping derived from DFA states and trains the model to imitate trajectories generated with these shaped rewards. In contrast, our method integrates temporal logic into the training objective through logic-based regularization, enabling constraint-aware learning without modifying the reward function.
 
 
+An alternative line of work enforces safety through shielding \cite{alshiekh2018safe,jansen2018safe,belardinelli2025probabilistic}, where a runtime monitor prevents the agent from executing actions that may lead to unsafe states. 
+While shielding provides strong safety guarantees, it typically assumes the availability of an explicit environment model, it is primarly designed for on-policy learning, and it is structurally limited to the "safety fragment" of formal specifications. In contrast, our method is well suited for offline RL, do only require knowledge of the constraints without assuming any other knowledge of the environment, and can be used to impose any LTLf formula as a constraint, also the ones outside the safety fragment. 
 
+\subsection{Temporally-constrained sequence generation}
+\begin{comment}
+% old section on RL and LTLf removed
 
-\subsection{Temporal Logics, Automata and Neurosymbolic RL}
+Temporal logic formalisms, such as \ltl \cite{LTL} and \ltlf \cite{LTLf}, are often used in RL with non-Markovian rewards to define temporally extended goals and constraints. These allow to recover the Markovian property by conditioning the policy on the state of an automaton constructed from the formula. Well-known examples include Restraining Bolts \cite{de2019foundations,de2020restraining} and Reward Machines \cite{icarte2022reward,camacho2019ltl,toro2018teaching}. \ltl-based methods are also employed for multi-task RL \cite{vaezipoor2021ltl2action,jackermeier2024deepltl}, reward-shaping techniques \cite{hasanbeig2019certified,shao2023sample}, task inference \cite{hasanbeig2024symbolic}, and shielding \cite{varricchione2024pure,corsi2024verification}.
+\end{comment}
 
-Temporal logic formalisms, such as \ltl \cite{LTL} and \ltlf \cite{LTLf}, are often used in RL with non-Markovian rewards to define temporally extended goals and constraints. These allow to recover the Markovian property by conditioning the policy on the state of an automaton constructed from the formula. Well-known examples include Restraining Bolts \cite{de2019foundations,de2020restraining} and Reward Machines \cite{icarte2022reward,camacho2019ltl,toro2018teaching}. \ltl-based methods are also employed for multi-task RL \cite{vaezipoor2021ltl2action,jackermeier2024deepltl}, reward-shaping techniques \cite{hasanbeig2019certified,shao2023sample}, and task inference \cite{hasanbeig2024symbolic}.
+Recently, there has been increasing interest in constraining autoregressive sequence generation through logical knowledge. Applications span Cyber-Physical Systems~\cite{STLnet}, Business Process Management~\cite{UmiliPMAI24,DiFrancescomarino17}, and natural language generation with Large Language Models (LLMs)~\cite{trident,llm_beam_search_1,llm_beam_search_2,llm_sampling1,montecarlo_llm,pseudosemantic_loss}.
+%
+Most prior work incorporates constraints at \emph{test time}, guiding suffix generation via constrained beam search~\cite{DiFrancescomarino17,trident,llm_beam_search_1,llm_beam_search_2}, auxiliary tractable models~\cite{llm_aux_mod_1,llm_aux_mod_2}, or conditioned sampling~\cite{llm_sampling1,montecarlo_llm}.
+%
+In contrast, we enforce constraints at \emph{training time} through an auxiliary logical loss. Only few approaches follow this direction~\cite{STLnet,UmiliPMAI24,pseudosemantic_loss}. Among them,~\cite{UmiliPMAI24,pseudosemantic_loss} estimate the probability of satisfying a formula via pseudoprobabilities or Monte Carlo, while STLnet~\cite{STLnet} relies on a student–teacher scheme that is difficult to apply in discrete domains~\cite{UmiliPMAI24}.
 
-Our framework is closely related to \cite{UmiliPMAI24,mezini2025neuro}, where the injection of \ltlf trace constraints to autoregressive models via differentiable DFAs and logic loss is used to improve constraint satisfaction for Predictive Process Monitoring in a Business Process Management setting. \cite{tian2023reinforcement} also addresses RL using TTs and \ltlf constraints, but their approach differs from our framework. They relies on reward shaping derived from DFA states and trains the model to imitate trajectories generated with these shaped rewards. In contrast, our method integrates temporal logic into the training objective through logic-based regularization, enabling constraint-aware learning without modifying the reward function.
+A key limitation of existing methods is that they target \emph{homogeneous} sequences (e.g., text), assuming that logical formulas are directly expressed over the generated tokens. While reasonable for language, this assumption is limiting in RL settings.
+Here, we consider trajectories of states, actions, and rewards (as formalized in Eq.~\ref{eq:trace_form}), where constraints are naturally specified over abstract, high-level \emph{symbols} that must be grounded in subsequences representing states or state–action pairs.
+%
+Our approach builds on~\cite{UmiliPMAI24,mezini2025neuro}, which approximate \ltlf satisfaction via Monte Carlo and use it as a training loss. We extend this framework to Decision and Trajectory Transformers for safe offline RL applications.
 
 \begin{comment}
     

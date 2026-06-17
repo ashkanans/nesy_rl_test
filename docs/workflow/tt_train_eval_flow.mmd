@@ -1,0 +1,98 @@
+flowchart TD
+    A([TT experiment starts]) --> B["scripts/train.py"]
+    B --> C["Load config file<br/>or CLI args override defaults"]
+    C --> D["train_cb.train"]
+
+    D --> E["Build environment dataset"]
+    E --> E1{"--env"}
+    E1 --> CB["CBSequenceDataset"]
+    E1 --> FL["FrozenLakeSequenceDataset"]
+    E1 --> NRM["NRMSafetySequenceDataset"]
+    E1 --> DSRL["DSRLSequenceDataset"]
+    CB --> Tokens["Full episode transition tokens"]
+    FL --> Tokens
+    NRM --> Tokens
+    DSRL --> Tokens
+    Tokens --> Windows["Sliding windows<br/>X, Y, mask"]
+    Tokens --> DataArtifact["dataset_artifacts/*.npz<br/>*.meta.json"]
+
+    D --> F["Resolve formulas"]
+    F --> F1{"Formula source"}
+    F1 --> Spec["--spec"]
+    F1 --> Manual1["--ltl_formula"]
+    F1 --> ManualN["--ltl_formulas"]
+    Spec --> FormulaList["Formula list"]
+    Manual1 --> FormulaList
+    ManualN --> FormulaList
+
+    FormulaList --> G["Build TTDFAAdapter"]
+    Tokens --> G
+    G --> H["Create one DFA per formula"]
+    H --> H1{"--dfa_backend"}
+    H1 --> Auto["auto"]
+    H1 --> Template["template"]
+    H1 --> LTLF["ltlf"]
+    Auto --> DFA["Raw DFA(s)"]
+    Template --> DFA
+    LTLF --> DFA
+
+    DFA --> I{"--dfa_mode"}
+    I --> Single["single"]
+    I --> Product["product"]
+    I --> Multi["multi"]
+    Single --> DeepDFA["DeepDFA"]
+    Product --> DeepDFA
+    Multi --> DeepDFAList["DeepDFA list"]
+
+    Windows --> J["Build TT model"]
+    DeepDFA --> K["LogicLossModule"]
+    DeepDFAList --> K
+    G --> K
+    J --> K
+
+    K --> L["Forward model<br/>logits + supervised CE"]
+    L --> M["Gumbel-Softmax samples<br/>--num_samples, --temperature"]
+    M --> N["token probs -> symbol probs"]
+    N --> O["Append deterministic END"]
+    O --> P["DeepDFA.forward_pi"]
+    P --> Q["Acceptance probability"]
+    Q --> R{"Logic options"}
+    R --> Weight["--logic_sample_weighting<br/>importance or uniform"]
+    R --> Floor["--logic_acceptance_floor_mode<br/>clamp, add, none"]
+    R --> StateOnly["--logic_state_only"]
+    Weight --> LogicLoss["logic_loss = -log(expected acceptance)"]
+    Floor --> LogicLoss
+    StateOnly --> LogicLoss
+    L --> Total["total loss<br/>(1-alpha)*CE + alpha*logic_loss"]
+    LogicLoss --> Total
+    Total --> TrainStep["backprop, grad clip, AdamW"]
+    TrainStep --> Checkpoint["cb_state_epoch.pt"]
+
+    Checkpoint --> EvalStart["scripts/evaluate.py"]
+    EvalStart --> Load["Load checkpoint"]
+    EvalStart --> Rebuild["Rebuild dataset + adapter + DFA"]
+    Load --> Rollout["evaluate_policy_rollouts"]
+    Rebuild --> Rollout
+    Rollout --> Decode{"--decoding_mode"}
+    Decode --> Greedy["greedy"]
+    Decode --> Beam["beam"]
+    Decode --> CBeam["constrained_beam"]
+    CBeam --> DFAState["Track DFA state per beam<br/>prune reject sink, rerank acceptance"]
+    Greedy --> StepEnv["Execute selected action in env"]
+    Beam --> StepEnv
+    DFAState --> StepEnv
+    StepEnv --> Finalize["Append END to executed trace"]
+    Finalize --> Hard["check_sat_token_ids"]
+    Finalize --> Soft["check_sat_symbol_probs"]
+    Hard --> Outputs["metrics + dfa summary + rollout stats"]
+    Soft --> Outputs
+
+    classDef process fill:#e8f4ff,stroke:#2563eb,color:#0f172a
+    classDef logic fill:#fff7ed,stroke:#ea580c,color:#431407
+    classDef decision fill:#fef9c3,stroke:#ca8a04,color:#422006
+    classDef output fill:#f1f5f9,stroke:#475569,color:#0f172a
+
+    class B,C,D,E,CB,FL,NRM,DSRL,Tokens,Windows,J,L,M,N,O,P,TrainStep,EvalStart,Load,Rebuild,Rollout,StepEnv,Finalize process
+    class F,Spec,Manual1,ManualN,FormulaList,G,H,Auto,Template,LTLF,DFA,Single,Product,Multi,DeepDFA,DeepDFAList,K,Q,Weight,Floor,StateOnly,LogicLoss,Hard,Soft,DFAState logic
+    class E1,F1,H1,I,R,Decode decision
+    class DataArtifact,Total,Checkpoint,Outputs output

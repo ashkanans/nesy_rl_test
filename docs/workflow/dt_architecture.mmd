@@ -1,0 +1,77 @@
+flowchart TD
+    A([DT input batch]) --> S["states<br/>shape [B, C]"]
+    A --> PA["prev_actions<br/>shape [B, C]<br/>pad action at episode start"]
+    A --> RTG["return-to-go<br/>shape [B, C]"]
+    A --> Tm["timesteps<br/>shape [B, C]"]
+    A --> Target["targets: current actions<br/>shape [B, C]"]
+    A --> Mask["mask: real positions<br/>shape [B, C]"]
+
+    S --> SE["state_emb<br/>Embedding(num_states, n_embd)"]
+    PA --> AE["prev_action_emb<br/>Embedding(num_actions + 1, n_embd)"]
+    RTG --> RE["rtg_emb<br/>Linear(1 -> n_embd)"]
+    Tm --> Clamp["clamp timestep to max_timestep - 1"]
+    Clamp --> TE["time_emb<br/>Embedding(max_timestep, n_embd)"]
+
+    SE --> Sum["sum embeddings per timestep"]
+    AE --> Sum
+    RE --> Sum
+    TE --> Sum
+    Sum --> LN["input LayerNorm"]
+    LN --> ApplyMask["multiply by attention_mask<br/>zero padded positions"]
+    ApplyMask --> CausalMask["causal mask<br/>future timesteps hidden"]
+    CausalMask --> Encoder["TransformerEncoder<br/>n_layer layers"]
+    Encoder --> EncBlock["Each layer:<br/>self-attention + feed-forward GELU + residuals"]
+    EncBlock --> Hidden["hidden states<br/>shape [B, C, n_embd]"]
+    Hidden --> Head["linear action head<br/>n_embd -> num_actions"]
+    Head --> Logits["action logits<br/>shape [B, C, num_actions]"]
+
+    Logits --> CE["action_CE<br/>cross_entropy(logits, targets)"]
+    Target --> CE
+    CE --> Ignore["ignore padded targets<br/>ignore_index = -100"]
+    Ignore --> SupLoss["supervised action loss"]
+
+    Logits --> LogicSwitch{"--logic_alpha > 0?"}
+    LogicSwitch -->|No| Zero["logic_loss = 0"]
+    LogicSwitch -->|Yes| SoftPolicy["softmax(logits / temperature)<br/>policy over actions"]
+    S --> StartState["known dataset state distribution<br/>one-hot(s_t)"]
+    SoftPolicy --> RolloutLogic["short horizon differentiable rollout"]
+    StartState --> RolloutLogic
+    RolloutLogic --> Trans["transition_probs[a, s, s_next]"]
+    Trans --> Source{"transition source"}
+    Source --> EnvP["true env P if exposed"]
+    Source --> Rules["grid rules if available"]
+    Source --> Counts["dataset counts fallback"]
+    RolloutLogic --> Hazard["hazard_mask[s]"]
+    Hazard --> LogicLoss["logic_loss<br/>average expected hazard occupancy"]
+
+    SupLoss --> Total["total loss<br/>action_CE + logic_alpha * logic_loss"]
+    Zero --> Total
+    LogicLoss --> Total
+
+    Logits --> TrainOut["Training output:<br/>action logits + loss"]
+    Total --> TrainOut
+    Logits --> EvalPolicy["Evaluation:<br/>choose action from final context timestep"]
+    EvalPolicy --> Mode{"dt_mode"}
+    Mode --> Greedy["greedy"]
+    Mode --> Constrained["constrained lookahead<br/>candidate actions + simulated env"]
+    Mode --> KNN["kNN suffix memory"]
+    Constrained --> DFA["optional DFA state tracking<br/>prune reject sink, add sat bonus"]
+    Greedy --> Env["execute action in env"]
+    DFA --> Env
+    KNN --> Env
+    Env --> NextState["environment returns next state"]
+    NextState --> Loop["append to history<br/>state becomes next DT input"]
+    Loop --> EvalPolicy
+    Env --> Metrics["return, goal rate, hazard rate,<br/>DFA satisfaction when spec provided"]
+
+    classDef input fill:#eef6ff,stroke:#2563eb,color:#0f172a
+    classDef arch fill:#f0fdf4,stroke:#16a34a,color:#052e16
+    classDef logic fill:#fff7ed,stroke:#ea580c,color:#431407
+    classDef decision fill:#fef9c3,stroke:#ca8a04,color:#422006
+    classDef output fill:#f1f5f9,stroke:#475569,color:#0f172a
+
+    class A,S,PA,RTG,Tm,Target,Mask input
+    class SE,AE,RE,Clamp,TE,Sum,LN,ApplyMask,CausalMask,Encoder,EncBlock,Hidden,Head,Logits,CE,Ignore,SupLoss,SoftPolicy,StartState,RolloutLogic,TrainOut,EvalPolicy,Env,NextState,Loop arch
+    class Trans,EnvP,Rules,Counts,Hazard,LogicLoss,DFA logic
+    class LogicSwitch,Source,Mode decision
+    class Zero,Total,Greedy,Constrained,KNN,Metrics output
