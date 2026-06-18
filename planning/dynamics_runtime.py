@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import json
 import os
 import warnings
 from typing import Any
@@ -64,6 +66,7 @@ def build_offline_transition_examples(base_dataset) -> dict[str, Any]:
             skipped_episodes += 1
             continue
 
+        state_semantics = str(getattr(base_dataset, "state_semantics", "pre"))
         for t in range(core_rows.shape[0] - 1):
             cur = core_rows[t]
             nxt = core_rows[t + 1]
@@ -72,7 +75,11 @@ def build_offline_transition_examples(base_dataset) -> dict[str, Any]:
                 continue
             try:
                 s = int(cur[state_idx])
-                a = int(cur[action_idx])
+                # With post-state serialization, row[t].state is the state reached
+                # after row[t].action. The action that leaves this state is stored
+                # on the next row.
+                action_row = nxt if state_semantics == "post" else cur
+                a = int(action_row[action_idx])
                 s_next = int(nxt[state_idx])
             except Exception:
                 skipped_rows += 1
@@ -113,6 +120,7 @@ def build_offline_transition_examples(base_dataset) -> dict[str, Any]:
             "coverage_ratio": coverage_ratio,
             "skipped_rows": int(skipped_rows),
             "skipped_episodes": int(skipped_episodes),
+            "state_semantics": str(getattr(base_dataset, "state_semantics", "pre")),
         },
     }
 
@@ -200,6 +208,7 @@ def fit_neural_dynamics_model(
     temperature=1.0,
     dropout=0.0,
     freeze_after_fit=True,
+    log_path: str | None = None,
 ) -> tuple[NeuralDiscreteDynamics, dict[str, Any]]:
     examples = build_offline_transition_examples(base_dataset)
     num_examples = int(examples["states"].shape[0])
@@ -256,8 +265,9 @@ def fit_neural_dynamics_model(
         generator=torch.Generator().manual_seed(int(seed)),
     )
 
+    log_rows: list[dict[str, Any]] = []
     train_loss_last = None
-    for _ in range(int(epochs)):
+    for epoch in range(int(epochs)):
         model.train()
         running_loss = 0.0
         running_examples = 0
@@ -274,6 +284,37 @@ def fit_neural_dynamics_model(
             running_loss += float(loss.item()) * batch_items
             running_examples += batch_items
         train_loss_last = running_loss / max(1, running_examples)
+
+        val_loss_epoch = None
+        val_accuracy_epoch = None
+        if val_dataset is not None and len(val_dataset) > 0:
+            val_loss_epoch, val_accuracy_epoch = _compute_dataset_accuracy(
+                model=model,
+                dataset=val_dataset,
+                batch_size=int(batch_size),
+                device=device,
+            )
+
+        row = {
+            "epoch": int(epoch),
+            "train_loss": float(train_loss_last),
+            "val_loss": None if val_loss_epoch is None else float(val_loss_epoch),
+            "val_accuracy": None if val_accuracy_epoch is None else float(val_accuracy_epoch),
+            "num_train_examples": int(len(train_dataset)),
+            "num_val_examples": int(0 if val_dataset is None else len(val_dataset)),
+        }
+        log_rows.append(row)
+        if log_path:
+            directory = os.path.dirname(log_path)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            with open(log_path, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+                writer.writeheader()
+                writer.writerows(log_rows)
+            json_path = os.path.splitext(log_path)[0] + ".json"
+            with open(json_path, "w") as f:
+                json.dump(log_rows, f, indent=2)
 
     train_loss_eval, train_accuracy = _compute_dataset_accuracy(
         model=model,
@@ -309,6 +350,8 @@ def fit_neural_dynamics_model(
             "num_layers": int(num_layers),
             "temperature": float(temperature),
             "loaded_from_checkpoint": False,
+            "training_log_path": log_path,
+            "training_history": log_rows,
         }
     )
     return model, stats

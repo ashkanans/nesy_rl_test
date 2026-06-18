@@ -20,7 +20,16 @@ from scripts.train_dt import get_arg_parser, train
 
 
 class _FakeDataset:
-    def __init__(self, *, episodes_tokens, num_states, num_actions, token_schema=None, schema_id=None):
+    def __init__(
+        self,
+        *,
+        episodes_tokens,
+        num_states,
+        num_actions,
+        token_schema=None,
+        schema_id=None,
+        state_semantics="pre",
+    ):
         self.episodes_tokens = episodes_tokens
         self.env = SimpleNamespace(
             observation_space=SimpleNamespace(n=int(num_states)),
@@ -28,6 +37,7 @@ class _FakeDataset:
         )
         self.token_schema = token_schema
         self.schema_id = schema_id
+        self.state_semantics = str(state_semantics)
 
 
 def _schema_with_swapped_positions() -> TokenSchemaDefinition:
@@ -97,6 +107,33 @@ def test_fallback_extraction_warns():
     np.testing.assert_array_equal(out["states"], np.asarray([0, 2], dtype=np.int64))
     np.testing.assert_array_equal(out["actions"], np.asarray([1, 0], dtype=np.int64))
     np.testing.assert_array_equal(out["next_states"], np.asarray([2, 1], dtype=np.int64))
+
+
+def test_post_state_semantics_uses_next_row_action():
+    dataset = _FakeDataset(
+        episodes_tokens=[
+            np.asarray(
+                [
+                    [5, 0, 0, 0],
+                    [6, 2, 0, 0],
+                    [7, 3, 0, 0],
+                    [8, 0, 0, 0],
+                ],
+                dtype=np.int64,
+            )
+        ],
+        num_states=9,
+        num_actions=4,
+        state_semantics="post",
+    )
+
+    with pytest.warns(UserWarning, match="token_schema"):
+        out = build_offline_transition_examples(dataset)
+
+    np.testing.assert_array_equal(out["states"], np.asarray([5, 6], dtype=np.int64))
+    np.testing.assert_array_equal(out["actions"], np.asarray([2, 3], dtype=np.int64))
+    np.testing.assert_array_equal(out["next_states"], np.asarray([6, 7], dtype=np.int64))
+    assert out["stats"]["state_semantics"] == "post"
 
 
 def test_build_dataset_tabular_dynamics():

@@ -221,6 +221,13 @@ def train(args):
                 dynamics_model_path = requested_ckpt
             elif save_ckpt:
                 dynamics_model_path = os.path.join(run_dir, "dynamics_model.pt")
+            dynamics_log_path = None
+            if dynamics_model_path is not None:
+                dynamics_log_path = os.path.join(
+                    os.path.dirname(dynamics_model_path), "dynamics_training_log.csv"
+                )
+            elif save_ckpt:
+                dynamics_log_path = os.path.join(run_dir, "dynamics_training_log.csv")
 
             if dynamics_model_path is not None and os.path.exists(dynamics_model_path):
                 dynamics_model, dynamics_stats = load_neural_dynamics_checkpoint(
@@ -246,6 +253,7 @@ def train(args):
                     seed=int(args.seed),
                     temperature=float(args.dynamics_temperature),
                     freeze_after_fit=bool(args.dynamics_freeze_after_fit),
+                    log_path=dynamics_log_path,
                 )
                 dynamics_stats["dataset_identifiers"] = dataset_ids
                 if dynamics_model_path is not None:
