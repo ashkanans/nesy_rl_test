@@ -84,7 +84,7 @@ def _main_log_for_run(run_dir: Path) -> Path | None:
     return logs[-1] if logs else None
 
 
-def _run_summary(run_dir: Path) -> dict[str, Any]:
+def _run_summary(run_dir: Path, active_processes: list[str] | None = None) -> dict[str, Any]:
     manifest = _load_json(run_dir / "matrix_manifest.json")
     progress = _load_json(run_dir / "matrix_progress.json")
     summary = _load_json(run_dir / "matrix_summary.json")
@@ -115,11 +115,17 @@ def _run_summary(run_dir: Path) -> dict[str, Any]:
     if remaining and avg_job:
         eta = remaining * avg_job / max(1, workers)
 
-    run_state = "finished" if finished_ts else "running_or_interrupted"
+    active_processes = active_processes or []
+    active_text = "\n".join(active_processes)
+    has_active_process = str(run_dir) in active_text or run_dir.name in active_text
+
+    run_state = "finished" if finished_ts else "incomplete_no_active_process"
     if jobs_total and done >= jobs_total:
         run_state = "finished"
+    elif has_active_process:
+        run_state = "actively_running"
     elif done == 0 and created_ts and now - float(created_ts) > 300:
-        run_state = "starting_or_stalled"
+        run_state = "created_but_no_active_progress"
 
     recent_results = []
     for r in results[-5:]:
@@ -164,14 +170,27 @@ def _discover_runs(root_glob: str, limit: int) -> list[Path]:
     return paths[: max(1, limit)]
 
 
-def _print_human(run_summaries: list[dict[str, Any]], show_processes: bool) -> None:
+def _print_active_processes(active_processes: list[str]) -> None:
+    print("Active ColourBomb DT Processes")
+    print("=" * 80)
+    if active_processes:
+        for line in active_processes:
+            print(f"  {line}")
+    else:
+        print("  none found")
+
+
+def _print_human(
+    run_summaries: list[dict[str, Any]],
+    show_processes: bool,
+    active_processes: list[str],
+) -> None:
     print("ColourBomb DT Matrix Runs")
     print("=" * 80)
     if show_processes:
-        procs = _active_processes()
         print("\nActive container processes:")
-        if procs:
-            for line in procs:
+        if active_processes:
+            for line in active_processes:
                 print(f"  {line}")
         else:
             print("  none found")
@@ -220,10 +239,19 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=5, help="Number of newest runs to show.")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     parser.add_argument("--no-processes", action="store_true", help="Do not show active ps output.")
+    parser.add_argument("--active-only", action="store_true", help="Only print active matrix/train/eval processes.")
     args = parser.parse_args()
 
+    active_processes = _active_processes()
+    if args.active_only:
+        if args.json:
+            print(json.dumps({"active_processes": active_processes}, indent=2))
+        else:
+            _print_active_processes(active_processes)
+        return 0
+
     runs = _discover_runs(args.root_glob, args.limit)
-    summaries = [_run_summary(p) for p in runs]
+    summaries = [_run_summary(p, active_processes=active_processes) for p in runs]
     if args.json:
         serializable = []
         for info in summaries:
@@ -231,9 +259,9 @@ def main() -> int:
             item["path"] = str(item["path"])
             item["main_log"] = str(item["main_log"]) if item["main_log"] else None
             serializable.append(item)
-        print(json.dumps({"runs": serializable, "active_processes": _active_processes()}, indent=2))
+        print(json.dumps({"runs": serializable, "active_processes": active_processes}, indent=2))
     else:
-        _print_human(summaries, show_processes=not args.no_processes)
+        _print_human(summaries, show_processes=not args.no_processes, active_processes=active_processes)
     return 0
 
 
