@@ -72,9 +72,10 @@ class LogicLossModule:
 
                logic_loss = -log( E_{samples} [ acceptance ] )
 
-        6) The final training loss is a convex combination:
+        6) The final training loss keeps supervised imitation active and adds
+           logic as an auxiliary regularizer:
 
-               total_loss = (1 - alpha) * supervised_loss + alpha * logic_loss
+               total_loss = supervised_loss + alpha * logic_loss
 
     This provides a differentiable way to inject global LTL constraints into
     sequence model training.
@@ -114,7 +115,8 @@ class LogicLossModule:
                 Gumbel-Softmax temperature; lower = sharper (closer to hard argmax),
                 higher = softer distributions.
             alpha:
-                mixing coefficient in [0, 1] between supervised and logic loss.
+                Logic regularization weight. Supervised loss is always kept active;
+                alpha only scales the auxiliary logic loss.
             eps:
                 epsilon used when clamping acceptance probabilities before
                 applying the logarithm; if clamp_acceptance is False or eps <= 0,
@@ -229,7 +231,7 @@ class LogicLossModule:
             temperature:
                 Gumbel-Softmax temperature.
             alpha:
-                mixing coefficient between supervised and logic loss.
+                logic regularization weight in total_loss = sup_loss + alpha * logic_loss.
             return_components:
                 if True, return (total_loss, sup_loss, logic_loss) separately,
                 otherwise return only total_loss.
@@ -304,7 +306,7 @@ class LogicLossModule:
                 else None,
             }
 
-        total_loss = (1.0 - alpha) * sup_loss + alpha * logic_loss
+        total_loss = sup_loss + alpha * logic_loss
 
         if return_components:
             return total_loss, sup_loss, logic_loss

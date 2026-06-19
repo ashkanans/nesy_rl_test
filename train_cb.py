@@ -1340,7 +1340,12 @@ def get_arg_parser(add_help=True):
 
     p.add_argument("--num_samples", type=int, default=10)
     p.add_argument("--temperature", type=float, default=0.5)
-    p.add_argument("--alpha", type=float, default=0.4)
+    p.add_argument(
+        "--alpha",
+        type=float,
+        default=0.4,
+        help="Logic regularization weight in total_loss = supervised_loss + alpha * logic_loss.",
+    )
     p.add_argument(
         "--logic_sample_weighting",
         type=str,
