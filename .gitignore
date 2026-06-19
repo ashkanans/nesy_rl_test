@@ -76,6 +76,9 @@ symbolicDFAs/
 runs/
 artifacts/
 
+# Runtime logs / background process markers
+logs/*.pid
+
 # LaTeX paper template: keep only source essentials
 paper/history.txt
 paper/readme.txt
