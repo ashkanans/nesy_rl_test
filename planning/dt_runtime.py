@@ -391,6 +391,89 @@ def compute_dt_logic_rollout_penalty(
     return penalty / float(rollout_horizon)
 
 
+def _deepdfa_acceptance_from_symbol_probs(symbol_probs: torch.Tensor, deep_dfa) -> torch.Tensor:
+    """Return soft DFA acceptance probabilities for already-terminated traces."""
+    deep_device = symbol_probs.device
+    if hasattr(deep_dfa, "trans_prob") and isinstance(deep_dfa.trans_prob, torch.Tensor):
+        deep_device = deep_dfa.trans_prob.device
+    elif hasattr(deep_dfa, "fin_matrix") and isinstance(deep_dfa.fin_matrix, torch.Tensor):
+        deep_device = deep_dfa.fin_matrix.device
+
+    _, dfa_rew_seq = deep_dfa.forward_pi(symbol_probs.to(deep_device))
+    dfa_rew_seq = dfa_rew_seq.to(symbol_probs.device)
+    return dfa_rew_seq[:, -1, 1].clamp(min=0.0, max=1.0)
+
+
+def _state_dist_to_symbol_probs(
+    state_dist: torch.Tensor,
+    adapter,
+    num_states: int,
+) -> torch.Tensor:
+    """Map a state distribution over env states to DFA symbol probabilities."""
+    symbol_probs = state_dist.new_zeros(state_dist.shape[0], int(adapter.num_symbols))
+    state_to_symbol = adapter.pos_bin_to_sym_idx.to(state_dist.device)[0, :num_states]
+    idx = state_to_symbol.view(1, -1).expand(state_dist.shape[0], -1)
+    symbol_probs.scatter_add_(1, idx, state_dist[:, :num_states])
+    return symbol_probs
+
+
+def compute_dt_dfa_rollout_loss(
+    logits: torch.Tensor,
+    states: torch.Tensor,
+    attention_mask: torch.Tensor,
+    transition_probs: torch.Tensor,
+    adapter,
+    deep_dfa,
+    rollout_horizon: int,
+    temperature: float = 1.0,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """
+    Formula-aware DT logic loss.
+
+    Starting from each known dataset state, roll a soft state distribution forward
+    with the DT action probabilities and the chosen dynamics backend, convert the
+    resulting state trace into DFA symbol probabilities, append END, and penalize
+    low acceptance probability under the actual LTLf-derived DeepDFA.
+    """
+    if rollout_horizon <= 0:
+        return logits.new_zeros(())
+
+    B, T, A = logits.shape
+    S = int(transition_probs.shape[-1])
+    valid = attention_mask.float().clamp(min=0.0, max=1.0).reshape(-1)
+    valid_count = valid.sum().clamp(min=1.0)
+
+    temp = max(float(temperature), 1e-6)
+    action_probs = torch.softmax(logits / temp, dim=-1).clamp(min=1e-8, max=1.0)
+    action_probs = action_probs / action_probs.sum(dim=-1, keepdim=True)
+    action_probs = action_probs.reshape(-1, A)
+
+    state_ids = states.clamp(min=0, max=S - 1).reshape(-1)
+    state_dist = F.one_hot(state_ids, num_classes=S).float()
+
+    symbol_steps = [_state_dist_to_symbol_probs(state_dist, adapter, S)]
+    trans = transition_probs
+    for _ in range(int(rollout_horizon)):
+        p_pi = torch.einsum("na,asr->nsr", action_probs, trans)
+        state_dist = torch.bmm(state_dist.unsqueeze(1), p_pi).squeeze(1)
+        symbol_steps.append(_state_dist_to_symbol_probs(state_dist, adapter, S))
+
+    symbol_probs = torch.stack(symbol_steps, dim=1)
+    symbol_probs = adapter.append_terminal_end_symbol_probs(symbol_probs)
+
+    dfas = deep_dfa if isinstance(deep_dfa, (list, tuple)) else [deep_dfa]
+    losses = []
+    for dfa in dfas:
+        accept_prob = _deepdfa_acceptance_from_symbol_probs(symbol_probs, dfa)
+        per_item = -torch.log(accept_prob.clamp(min=float(eps)))
+        losses.append((per_item * valid).sum() / valid_count)
+
+    if not losses:
+        return logits.new_zeros(())
+    return torch.stack(losses).mean()
+
+
 def build_knn_suffix_memory(base_dataset, env_name: str):
     """
     Build state-indexed suffix candidates for kNN continuation scoring.

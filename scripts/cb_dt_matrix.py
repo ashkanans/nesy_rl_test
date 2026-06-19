@@ -547,6 +547,8 @@ def _train_baselines(job: Job, cfg: WorkerConfig) -> tuple[str, str | None]:
                 baseline_dir,
                 "--cb_policy_mix_spec",
                 job.policy_mix_spec,
+                "--spec",
+                job.spec,
                 "--logic_alpha",
                 str(alpha),
             ]
@@ -791,6 +793,7 @@ def _build_train_cmd_common(args: argparse.Namespace) -> list[str]:
     cmd.extend(["--lr", str(args.lr)])
     cmd.extend(["--weight_decay", str(args.weight_decay)])
     cmd.extend(["--grad_clip", str(args.grad_clip)])
+    cmd.extend(["--dt_logic_loss_type", str(args.dt_logic_loss_type)])
     cmd.extend(["--logic_rollout_horizon", str(args.logic_rollout_horizon)])
     cmd.extend(["--logic_temperature", str(args.logic_temperature)])
     cmd.extend(["--dt_logic_dynamics_backend", str(args.dt_logic_dynamics_backend)])
@@ -811,6 +814,7 @@ def _build_train_cmd_common(args: argparse.Namespace) -> list[str]:
     cmd.extend(["--cb_policy_mix_sampling", str(args.cb_policy_mix_sampling)])
     cmd.extend(["--cb_state_semantics", str(args.cb_state_semantics)])
     cmd.extend(["--cb_policy_mix_normal_mean_mode", str(args.cb_policy_mix_normal_mean_mode)])
+    cmd.extend(["--dfa_mode", str(args.dfa_mode)])
     if args.dynamics_freeze_after_fit:
         cmd.append("--dynamics_freeze_after_fit")
     else:
@@ -823,6 +827,8 @@ def _build_train_cmd_common(args: argparse.Namespace) -> list[str]:
         cmd.extend(["--dynamics_checkpoint_path", str(args.dynamics_checkpoint_path)])
     if args.cb_policy_mix_normal_spec is not None:
         cmd.extend(["--cb_policy_mix_normal_spec", str(args.cb_policy_mix_normal_spec)])
+    if args.use_safe_dfa:
+        cmd.append("--use_safe_dfa")
     if args.stochastic:
         cmd.append("--stochastic")
     if args.rtg_target is not None:
@@ -897,6 +903,7 @@ def parse_args(argv: list[str] | None = None):
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight_decay", type=float, default=1e-4)
     p.add_argument("--grad_clip", type=float, default=1.0)
+    p.add_argument("--dt_logic_loss_type", type=str, choices=["auto", "hazard", "dfa"], default="auto")
     p.add_argument("--logic_rollout_horizon", type=int, default=2)
     p.add_argument("--logic_temperature", type=float, default=1.0)
     p.add_argument(

@@ -29,6 +29,7 @@ from planning.dt_runtime import (
     build_dt_dataset,
     build_tabular_dynamics,
     build_dt_offline_source,
+    compute_dt_dfa_rollout_loss,
     compute_dt_logic_rollout_penalty,
     compute_default_rtg_target,
     dt_metrics_template,
@@ -65,6 +66,17 @@ def get_arg_parser(add_help=True):
     p.add_argument("--weight_decay", type=float, default=1e-4)
     p.add_argument("--grad_clip", type=float, default=1.0)
     p.add_argument("--logic_alpha", type=float, default=0.0)
+    p.add_argument(
+        "--dt_logic_loss_type",
+        type=str,
+        choices=["auto", "hazard", "dfa"],
+        default="auto",
+        help=(
+            "DT logic loss: hazard keeps the legacy unsafe-state penalty; "
+            "dfa uses the actual LTLf/DFA formula when --spec/--ltl_formula(s) is provided; "
+            "auto selects dfa when a formula source is present, otherwise hazard."
+        ),
+    )
     p.add_argument("--logic_rollout_horizon", type=int, default=2)
     p.add_argument("--logic_temperature", type=float, default=1.0)
     p.add_argument(
@@ -128,6 +140,15 @@ def get_arg_parser(add_help=True):
     p.add_argument("--dsrl_cost_unsafe_quantile", type=float, default=None)
     p.add_argument("--dsrl_download", action="store_true")
 
+    p.add_argument("--ltl_formula", type=str, default=None)
+    p.add_argument("--ltl_formulas", type=str, nargs="+", default=None)
+    p.add_argument("--spec", type=str, default=None)
+    p.add_argument("--dfa_mode", type=str, choices=["single", "product", "multi"], default="product")
+    p.add_argument("--use_safe_dfa", action="store_true")
+    p.add_argument("--constraint_dims", type=int, nargs="+", default=[0])
+    p.add_argument("--frozenlake_use_position_props", action="store_true")
+    p.add_argument("--dfa_backend", type=str, choices=["auto", "ltlf", "template"], default="auto")
+
     p.add_argument("--run_dir", type=str, default=None)
     p.add_argument("--base_runs_dir", type=str, default="runs")
     p.add_argument(
@@ -158,6 +179,23 @@ def get_arg_parser(add_help=True):
         ),
     )
     return p
+
+
+def _has_formula_source(args) -> bool:
+    return bool(
+        getattr(args, "spec", None) is not None
+        or getattr(args, "ltl_formula", None) is not None
+        or getattr(args, "ltl_formulas", None) is not None
+    )
+
+
+def _resolve_dt_logic_loss_type(args) -> str:
+    requested = str(getattr(args, "dt_logic_loss_type", "auto"))
+    if requested == "auto":
+        return "dfa" if _has_formula_source(args) else "hazard"
+    if requested == "dfa" and not _has_formula_source(args):
+        raise ValueError("--dt_logic_loss_type dfa requires --spec, --ltl_formula, or --ltl_formulas.")
+    return requested
 
 
 def _to_device(batch, device):
@@ -199,11 +237,29 @@ def train(args):
     num_actions = int(base_dataset.env.action_space.n)
     transition_probs_t = None
     hazard_mask_t = None
+    dt_logic_loss_type_effective = "none"
+    dfa_adapter = None
+    dfa_deep = None
+    dfa_formulas = None
     dynamics_stats = None
     dynamics_model_path = None
     if float(args.logic_alpha) > 0.0:
-        hazard = hazard_mask_for_env(args.env, base_dataset.env)
-        hazard_mask_t = torch.from_numpy(hazard).float().to(device)
+        dt_logic_loss_type_effective = _resolve_dt_logic_loss_type(args)
+        if dt_logic_loss_type_effective == "hazard":
+            hazard = hazard_mask_for_env(args.env, base_dataset.env)
+            hazard_mask_t = torch.from_numpy(hazard).float().to(device)
+        elif dt_logic_loss_type_effective == "dfa":
+            from train_cb import build_adapter_and_dfa, resolve_formulas
+
+            dfa_adapter, dfa_deep, _ = build_adapter_and_dfa(args, base_dataset)
+            dfa_formulas = resolve_formulas(args, dataset=base_dataset)
+            if isinstance(dfa_deep, (list, tuple)):
+                dfa_deep = [d.to(device) for d in dfa_deep]
+            else:
+                dfa_deep = dfa_deep.to(device)
+        else:
+            raise ValueError(f"Unsupported DT logic loss type '{dt_logic_loss_type_effective}'")
+
         if args.dt_logic_dynamics_backend == "tabular_env":
             dyn = build_tabular_dynamics(base_dataset)
             transition_probs_t = torch.from_numpy(dyn).float().to(device)
@@ -308,13 +364,35 @@ def train(args):
                 ignore_index=-100,
             )
             logic_loss = logits.new_zeros(())
-            if transition_probs_t is not None and hazard_mask_t is not None:
+            if (
+                dt_logic_loss_type_effective == "hazard"
+                and transition_probs_t is not None
+                and hazard_mask_t is not None
+            ):
                 logic_loss = compute_dt_logic_rollout_penalty(
                     logits=logits,
                     states=states,
                     attention_mask=mask,
                     transition_probs=transition_probs_t,
                     hazard_mask=hazard_mask_t,
+                    rollout_horizon=int(args.logic_rollout_horizon),
+                    temperature=float(args.logic_temperature),
+                )
+                if not torch.isfinite(logic_loss):
+                    logic_loss = logits.new_zeros(())
+            elif (
+                dt_logic_loss_type_effective == "dfa"
+                and transition_probs_t is not None
+                and dfa_adapter is not None
+                and dfa_deep is not None
+            ):
+                logic_loss = compute_dt_dfa_rollout_loss(
+                    logits=logits,
+                    states=states,
+                    attention_mask=mask,
+                    transition_probs=transition_probs_t,
+                    adapter=dfa_adapter,
+                    deep_dfa=dfa_deep,
                     rollout_horizon=int(args.logic_rollout_horizon),
                     temperature=float(args.logic_temperature),
                 )
@@ -359,10 +437,13 @@ def train(args):
                 "num_actions": num_actions,
                 "rtg_target": rtg_target,
                 "logic_alpha": float(args.logic_alpha),
+                "dt_logic_loss_type": str(getattr(args, "dt_logic_loss_type", "auto")),
+                "dt_logic_loss_type_effective": str(dt_logic_loss_type_effective),
                 "logic_rollout_horizon": int(args.logic_rollout_horizon),
                 "logic_temperature": float(args.logic_temperature),
                 "dt_logic_dynamics_backend": str(args.dt_logic_dynamics_backend),
                 "dynamics_stats": dynamics_stats,
+                "dfa_formulas": dfa_formulas,
             },
         },
         ckpt_path,
@@ -389,6 +470,9 @@ def train(args):
         "device": str(device),
         "checkpoint_path": ckpt_path,
         "dynamics_stats": dynamics_stats,
+        "dt_logic_loss_type": str(getattr(args, "dt_logic_loss_type", "auto")),
+        "dt_logic_loss_type_effective": str(dt_logic_loss_type_effective),
+        "dfa_formulas": dfa_formulas,
     }
     if dynamics_model_path is not None:
         summary["dynamics_checkpoint_path"] = dynamics_model_path

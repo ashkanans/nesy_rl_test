@@ -41,7 +41,11 @@ from train_cb import build_adapter_and_dfa, resolve_formulas
 
 def parse_eval_args():
     parent = get_train_dt_arg_parser(add_help=False)
-    parser = argparse.ArgumentParser(parents=[parent], description="Evaluate DT checkpoint.")
+    parser = argparse.ArgumentParser(
+        parents=[parent],
+        conflict_handler="resolve",
+        description="Evaluate DT checkpoint.",
+    )
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument(
         "--allow_train_fallback",
