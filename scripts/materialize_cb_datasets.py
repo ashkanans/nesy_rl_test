@@ -1,0 +1,832 @@
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import re
+import sys
+from collections import Counter
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+import torch
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from datasets.artifact_io import save_sequence_dataset_artifact
+from datasets.cb_dataset import CBSequenceDataset
+from specs.cb_specs import SPECS as CB_SPECS
+from train_cb import build_adapter_and_dfa, resolve_formulas
+
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover - fallback when tqdm is unavailable
+
+    class _TqdmFallback:
+        def __init__(self, iterable=None, total=None, **kwargs):
+            self._iterable = iterable if iterable is not None else range(int(total or 0))
+
+        def __iter__(self):
+            return iter(self._iterable)
+
+        def set_postfix_str(self, *args, **kwargs):
+            return None
+
+        def update(self, *args, **kwargs):
+            return None
+
+        def close(self):
+            return None
+
+    def tqdm(iterable=None, *args, **kwargs):
+        kw = dict(kwargs)
+        total = kw.pop("total", None)
+        return _TqdmFallback(iterable=iterable, total=total, **kw)
+
+
+DEFAULT_POLICY_NAMES = [
+    "random",
+    "shortest_safe",
+    "longest_safe",
+    "shortest_any",
+    "longest_any",
+]
+
+DEFAULT_POLICY_MIX_SPECS = [
+    "random:1.0",
+    "shortest_safe:1.0",
+    "longest_safe:1.0",
+    "shortest_any:1.0",
+    "longest_any:1.0",
+    "random:0.7,shortest_safe:0.3",
+    "random:0.6,shortest_safe:0.4",
+]
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9._-]+", "_", str(text)).strip("_")
+
+
+def _write_json(path: str, payload: dict) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+
+
+def _fmt_weight(weight: float) -> str:
+    return f"{float(weight):.1f}"
+
+
+def _compositions(total: int, parts: int):
+    if parts <= 1:
+        yield (total,)
+        return
+    for first in range(total, -1, -1):
+        for rest in _compositions(total - first, parts - 1):
+            yield (first,) + rest
+
+
+def _generate_full_simplex_mix_specs(policy_names: list[str], grid_step: float) -> list[str]:
+    denom = int(round(1.0 / float(grid_step)))
+    if denom <= 0:
+        raise ValueError("--mix_grid_step must be positive.")
+    if not math.isclose(denom * float(grid_step), 1.0, rel_tol=0.0, abs_tol=1e-9):
+        raise ValueError("--mix_grid_step must evenly divide 1.0 (e.g. 0.1 or 0.25).")
+
+    specs: list[str] = []
+    for counts in _compositions(denom, len(policy_names)):
+        active = sum(1 for c in counts if c > 0)
+        parts = [
+            f"{name}:{_fmt_weight(count / denom)}"
+            for name, count in zip(policy_names, counts)
+            if count > 0
+        ]
+        specs.append((",".join(parts), active, tuple(counts)))
+
+    specs.sort(key=lambda item: (item[1], tuple(-v for v in item[2]), item[0]))
+    return [spec for spec, _, _ in specs]
+
+
+def _artifact_stem(base_name: str, semantics: str, mix_spec: str, seed: int) -> str:
+    mix_slug = _slug(mix_spec) or "mix"
+    return _slug(f"{base_name}_{semantics}_{mix_slug}_seed{int(seed)}")
+
+
+def _artifact_paths(base_dir: str, stem: str) -> tuple[str, str]:
+    npz_path = os.path.join(base_dir, f"{stem}.npz")
+    meta_path = os.path.join(base_dir, f"{stem}.meta.json")
+    return npz_path, meta_path
+
+
+def _analysis_root(base_dir: str, stem: str) -> str:
+    return os.path.join(base_dir, f"{stem}.analysis")
+
+
+def _analysis_summary_path(base_dir: str, stem: str) -> str:
+    return os.path.join(_analysis_root(base_dir, stem), "dataset_analysis", "summary.json")
+
+
+def parse_args(argv: list[str] | None = None):
+    p = argparse.ArgumentParser(
+        description="Materialize reusable ColourBomb dataset artifacts and analysis reports."
+    )
+    p.add_argument(
+        "--dataset_artifact_dir",
+        type=str,
+        default=str(REPO_ROOT / "artifacts" / "datasets" / "colorbomb"),
+        help="Directory where dataset artifacts will be written.",
+    )
+    p.add_argument(
+        "--dataset_artifact_name",
+        type=str,
+        default="dataset_snapshot",
+        help="Base artifact name used in generated filenames.",
+    )
+    p.add_argument(
+        "--full_simplex",
+        action="store_true",
+        help="Generate the full grid simplex instead of the explicit mix list.",
+    )
+    p.add_argument(
+        "--policy_names",
+        nargs="+",
+        default=DEFAULT_POLICY_NAMES,
+        help="Policy sources used when --full_simplex is enabled.",
+    )
+    p.add_argument(
+        "--mix_grid_step",
+        type=float,
+        default=0.1,
+        help="Grid step used for full simplex generation, e.g. 0.1 or 0.25.",
+    )
+    p.add_argument(
+        "--policy_mix_specs",
+        nargs="+",
+        default=DEFAULT_POLICY_MIX_SPECS,
+        help="Explicit CB policy mix specifications to materialize when not using --full_simplex.",
+    )
+    p.add_argument(
+        "--state_semantics",
+        nargs="+",
+        default=["pre", "post"],
+        choices=["pre", "post"],
+        help="CB state semantics to materialize.",
+    )
+    p.add_argument(
+        "--seeds",
+        nargs="+",
+        type=int,
+        default=[0],
+        help="Dataset seeds to materialize.",
+    )
+    p.add_argument("--num_episodes", type=int, default=5000)
+    p.add_argument("--max_steps", type=int, default=200)
+    p.add_argument(
+        "--sequence_length",
+        type=int,
+        default=16,
+        help=(
+            "Artifact-side sequence length used when saving the snapshot. "
+            "The downstream loader reindexes raw episodes at the caller's sequence_length."
+        ),
+    )
+    p.add_argument("--stochastic", action="store_true")
+    p.add_argument(
+        "--policy_mix_sampling",
+        type=str,
+        choices=["fixed", "normal"],
+        default="fixed",
+    )
+    p.add_argument("--policy_mix_normal_spec", type=str, default=None)
+    p.add_argument(
+        "--policy_mix_normal_mean_mode",
+        type=str,
+        choices=["base", "absolute", "delta"],
+        default="base",
+    )
+    p.add_argument(
+        "--skip_existing",
+        action="store_true",
+        help="Skip artifacts that already have both .npz and .meta.json files.",
+    )
+    p.add_argument(
+        "--analyze_all_specs",
+        action="store_true",
+        help="Write a full CB spec-comparison report for every generated dataset artifact.",
+    )
+    p.add_argument(
+        "--analysis_segment_limit",
+        type=int,
+        default=1000,
+        help=(
+            "Maximum number of dataset segments to score per spec in the report. "
+            "Use -1 to score all segments exactly."
+        ),
+    )
+    p.add_argument(
+        "--analysis_episode_limit",
+        type=int,
+        default=None,
+        help="Maximum number of episodes to score per spec in the report. Default: all.",
+    )
+    return p.parse_args(argv)
+
+
+def _dataset_spec_list(args) -> list[str]:
+    if bool(args.full_simplex):
+        return _generate_full_simplex_mix_specs(list(args.policy_names), float(args.mix_grid_step))
+    return list(args.policy_mix_specs)
+
+
+def _make_dataset(args, mix_spec: str, semantics: str, seed: int) -> CBSequenceDataset:
+    return CBSequenceDataset(
+        num_episodes=int(args.num_episodes),
+        max_steps=int(args.max_steps),
+        sequence_length=int(args.sequence_length),
+        stochastic=bool(args.stochastic),
+        seed=int(seed),
+        policy_mix_spec=str(mix_spec),
+        policy_mix_sampling=str(args.policy_mix_sampling),
+        policy_mix_normal_spec=args.policy_mix_normal_spec,
+        policy_mix_normal_mean_mode=str(args.policy_mix_normal_mean_mode),
+        state_semantics=str(semantics),
+    )
+
+
+def _save_dataset_artifact(base_dir: str, stem: str, args, dataset, mix_spec: str, semantics: str, seed: int):
+    ds_args = argparse.Namespace(
+        env="cb",
+        seed=int(seed),
+        spec=None,
+        save_generated_dataset=True,
+        dataset_artifact_dir=base_dir,
+        dataset_artifact_name=stem,
+        num_episodes=int(args.num_episodes),
+        max_steps=int(args.max_steps),
+        sequence_length=int(args.sequence_length),
+        stochastic=bool(args.stochastic),
+        cb_policy_mix_spec=str(mix_spec),
+        cb_policy_mix_sampling=str(args.policy_mix_sampling),
+        cb_policy_mix_normal_spec=args.policy_mix_normal_spec,
+        cb_policy_mix_normal_mean_mode=str(args.policy_mix_normal_mean_mode),
+        cb_state_semantics=str(semantics),
+    )
+    info = save_sequence_dataset_artifact(ds_args, dataset, artifact_tag="dataset_snapshot")
+    if info is None:
+        raise RuntimeError("Dataset artifact saving was disabled unexpectedly.")
+    return info
+
+
+def _dataset_overview(dataset) -> dict:
+    episodes = list(getattr(dataset, "episodes_tokens", []) or [])
+    rewards = getattr(dataset, "episode_rewards", None)
+    policy_labels = list(getattr(dataset, "episode_policy_labels", []) or [])
+    lengths = [int(np.asarray(ep).shape[0] - 1) for ep in episodes]
+    returns = [float(np.sum(np.asarray(r, dtype=np.float32))) for r in rewards] if rewards else []
+    outcome_counts = {"goal": 0, "bomb_hit": 0, "timeout": 0, "other": 0}
+    if rewards:
+        env_cfg = getattr(getattr(dataset, "env", None), "cfg", None)
+        max_steps_cfg = int(getattr(env_cfg, "max_steps", 200))
+        step_r = float(getattr(env_cfg, "step_reward", -0.01))
+        goal_r = float(getattr(env_cfg, "goal_reward", 1.0))
+        bomb_r = float(getattr(env_cfg, "bomb_reward", -1.0))
+        goal_thresh = 0.5 * (step_r + goal_r)
+        bomb_thresh = 0.5 * (step_r + bomb_r)
+        for rew in rewards:
+            rew = np.asarray(rew, dtype=np.float32)
+            if rew.size == 0:
+                outcome_counts["other"] += 1
+                continue
+            last = float(rew[-1])
+            if int(rew.shape[0]) >= max_steps_cfg:
+                outcome_counts["timeout"] += 1
+            elif last >= goal_thresh:
+                outcome_counts["goal"] += 1
+            elif last <= bomb_thresh:
+                outcome_counts["bomb_hit"] += 1
+            else:
+                outcome_counts["other"] += 1
+
+    return {
+        "env": str(getattr(dataset, "env_name", "cb")),
+        "num_episodes": int(len(episodes)),
+        "num_segments": int(len(dataset)),
+        "episode_length_min": int(np.min(lengths)) if lengths else 0,
+        "episode_length_max": int(np.max(lengths)) if lengths else 0,
+        "episode_length_mean": float(np.mean(lengths)) if lengths else 0.0,
+        "episode_return_min": float(np.min(returns)) if returns else None,
+        "episode_return_max": float(np.max(returns)) if returns else None,
+        "episode_return_mean": float(np.mean(returns)) if returns else None,
+        "episode_policy_counts": dict(Counter(policy_labels)),
+        "episode_outcomes": {
+            "counts": outcome_counts,
+            "rates": {
+                f"{k}_rate": (v / float(sum(outcome_counts.values())) if outcome_counts else 0.0)
+                for k, v in outcome_counts.items()
+            },
+        }
+        if rewards
+        else None,
+    }
+
+
+def _write_base_plots(dataset, out_dir: str, summary: dict) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        return
+
+    episodes = list(getattr(dataset, "episodes_tokens", []) or [])
+    rewards = getattr(dataset, "episode_rewards", None)
+    policy_labels = list(getattr(dataset, "episode_policy_labels", []) or [])
+
+    if episodes:
+        lengths = [int(np.asarray(ep).shape[0] - 1) for ep in episodes]
+        plt.figure(figsize=(6, 4))
+        plt.hist(lengths, bins=20)
+        plt.xlabel("Episode length (transitions)")
+        plt.ylabel("Count")
+        plt.title("CB episode length distribution")
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir, "episode_length_hist.png"))
+        plt.close()
+
+        state_ids = []
+        for ep in episodes:
+            state_ids.extend(np.asarray(ep[:-1, 0]).tolist())
+        plt.figure(figsize=(6, 4))
+        plt.hist(state_ids, bins=int(dataset.env.observation_space.n))
+        plt.xlabel("State ID")
+        plt.ylabel("Count")
+        plt.title("CB state visitation histogram")
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir, "state_hist.png"))
+        plt.close()
+
+    if rewards:
+        returns = [float(np.sum(np.asarray(r, dtype=np.float32))) for r in rewards]
+        plt.figure(figsize=(6, 4))
+        plt.hist(returns, bins=20)
+        plt.xlabel("Episode return")
+        plt.ylabel("Count")
+        plt.title("CB episode return distribution")
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir, "episode_return_hist.png"))
+        plt.close()
+
+    if policy_labels:
+        counts = Counter(policy_labels)
+        summary["episode_policy_counts"] = dict(counts)
+        csv_path = os.path.join(out_dir, "policy_mix_counts.csv")
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            f.write("policy_name,count\n")
+            for name, count in sorted(counts.items()):
+                f.write(f"{name},{int(count)}\n")
+
+        plt.figure(figsize=(8, 4))
+        plt.bar(list(counts.keys()), list(counts.values()))
+        plt.xticks(rotation=20, ha="right")
+        plt.xlabel("Policy source")
+        plt.ylabel("Episode count")
+        plt.title("CB dataset composition by policy source")
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir, "policy_mix_counts.png"))
+        plt.close()
+
+    if rewards:
+        env_cfg = getattr(getattr(dataset, "env", None), "cfg", None)
+        max_steps_cfg = int(getattr(env_cfg, "max_steps", 200))
+        step_r = float(getattr(env_cfg, "step_reward", -0.01))
+        goal_r = float(getattr(env_cfg, "goal_reward", 1.0))
+        bomb_r = float(getattr(env_cfg, "bomb_reward", -1.0))
+        goal_thresh = 0.5 * (step_r + goal_r)
+        bomb_thresh = 0.5 * (step_r + bomb_r)
+        outcome_counts = {"goal": 0, "bomb_hit": 0, "timeout": 0, "other": 0}
+        for rew in rewards:
+            rew = np.asarray(rew, dtype=np.float32)
+            if rew.size == 0:
+                outcome_counts["other"] += 1
+                continue
+            last = float(rew[-1])
+            if int(rew.shape[0]) >= max_steps_cfg:
+                outcome_counts["timeout"] += 1
+            elif last >= goal_thresh:
+                outcome_counts["goal"] += 1
+            elif last <= bomb_thresh:
+                outcome_counts["bomb_hit"] += 1
+            else:
+                outcome_counts["other"] += 1
+
+        summary["episode_outcomes"] = {
+            "counts": outcome_counts,
+            "rates": {
+                f"{k}_rate": (v / float(sum(outcome_counts.values())) if outcome_counts else 0.0)
+                for k, v in outcome_counts.items()
+            },
+        }
+
+        labels = ["goal", "bomb_hit", "timeout", "other"]
+        values = [outcome_counts[k] for k in labels]
+        plt.figure(figsize=(7, 4))
+        plt.bar(labels, values)
+        plt.ylabel("Episode count")
+        plt.title("CB dataset episode outcomes")
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir, "episode_outcomes_bar.png"))
+        plt.close()
+
+
+def _score_dfa_list(
+    dataset,
+    adapter,
+    dfa_list,
+    *,
+    segment_inputs,
+    episode_inputs,
+    segment_limit: int,
+    episode_limit: int | None,
+):
+    formula_reports = []
+    segment_masks = []
+    episode_masks = []
+
+    for formula_idx, dfa in enumerate(dfa_list):
+        seg_scores = []
+        if segment_inputs is not None and len(segment_inputs) > 0:
+            seg_batch = (
+                torch.stack(segment_inputs, dim=0)
+                if segment_limit < 0
+                else torch.stack(segment_inputs[:segment_limit], dim=0)
+            )
+            sat = adapter.batch_check_dfa_sat(seg_batch, dfa)
+            seg_scores = [float(x) for x in sat.detach().cpu().tolist()]
+        seg_mask = np.asarray(seg_scores, dtype=np.float32) >= 0.5 if seg_scores else np.asarray([])
+        segment_masks.append(seg_mask)
+
+        ep_scores = []
+        ep_iter = episode_inputs if episode_limit is None else episode_inputs[:episode_limit]
+        for ep in ep_iter:
+            sat = adapter.batch_check_dfa_sat(ep.unsqueeze(0), dfa)
+            ep_scores.append(float(sat[0].item()))
+        ep_mask = np.asarray(ep_scores, dtype=np.float32) >= 0.5 if ep_scores else np.asarray([])
+        episode_masks.append(ep_mask)
+
+        formula_reports.append(
+            {
+                "formula_index": int(formula_idx),
+                "dfa_num_states": int(getattr(dfa, "num_of_states", 0) or 0),
+                "dfa_num_symbols": int(len(getattr(dfa, "dictionary_symbols", []) or [])),
+                "segment_sample_size": int(len(seg_scores)),
+                "segment_satisfaction_rate": float(np.mean(seg_mask)) if seg_mask.size else None,
+                "segment_satisfied_count": int(np.sum(seg_mask)) if seg_mask.size else 0,
+                "episode_sample_size": int(len(ep_scores)),
+                "episode_satisfaction_rate": float(np.mean(ep_mask)) if ep_mask.size else None,
+                "episode_satisfied_count": int(np.sum(ep_mask)) if ep_mask.size else 0,
+                "example_satisfied_episode_indices": [
+                    int(i) for i in np.flatnonzero(ep_mask)[:20].tolist()
+                ],
+                "example_violating_episode_indices": [
+                    int(i) for i in np.flatnonzero(~ep_mask)[:20].tolist()
+                ]
+                if ep_mask.size
+                else [],
+            }
+        )
+
+    combined = {}
+    if segment_masks:
+        n = min(len(m) for m in segment_masks if len(m) > 0) if any(len(m) > 0 for m in segment_masks) else 0
+        if n > 0:
+            mat = np.stack([m[:n] for m in segment_masks], axis=1)
+            all_mask = np.all(mat, axis=1)
+            any_mask = np.any(mat, axis=1)
+            combined["segment_sample_size"] = int(n)
+            combined["segment_satisfaction_all_rate"] = float(np.mean(all_mask))
+            combined["segment_satisfaction_any_rate"] = float(np.mean(any_mask))
+            combined["segment_satisfied_all_count"] = int(np.sum(all_mask))
+            combined["segment_satisfied_any_count"] = int(np.sum(any_mask))
+
+    if episode_masks:
+        n = min(len(m) for m in episode_masks if len(m) > 0) if any(len(m) > 0 for m in episode_masks) else 0
+        if n > 0:
+            mat = np.stack([m[:n] for m in episode_masks], axis=1)
+            all_mask = np.all(mat, axis=1)
+            any_mask = np.any(mat, axis=1)
+            combined["episode_sample_size"] = int(n)
+            combined["episode_satisfaction_all_rate"] = float(np.mean(all_mask))
+            combined["episode_satisfaction_any_rate"] = float(np.mean(any_mask))
+            combined["episode_satisfied_all_count"] = int(np.sum(all_mask))
+            combined["episode_satisfied_any_count"] = int(np.sum(any_mask))
+
+    return formula_reports, combined
+
+
+def _write_spec_report_plots(out_dir: str, spec_names: list[str], spec_reports: dict[str, dict]) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        return
+
+    if not spec_names:
+        return
+
+    ep_rates = []
+    seg_rates = []
+    for spec_name in spec_names:
+        combined = spec_reports[spec_name]["combined"]
+        ep_rates.append(float(combined.get("episode_satisfaction_all_rate") or 0.0))
+        seg_rates.append(float(combined.get("segment_satisfaction_all_rate") or 0.0))
+
+    x = np.arange(len(spec_names))
+    width = 0.35
+    plt.figure(figsize=(max(10, len(spec_names) * 0.8), 4.5))
+    plt.bar(x - width / 2, ep_rates, width=width, label="episode_all_rate")
+    plt.bar(x + width / 2, seg_rates, width=width, label="segment_all_rate")
+    plt.xticks(x, spec_names, rotation=25, ha="right")
+    plt.ylim(0.0, 1.0)
+    plt.ylabel("Satisfaction rate")
+    plt.title("CB spec satisfaction summary")
+    plt.legend(loc="best")
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "spec_satisfaction_bar.png"))
+    plt.close()
+
+
+def _analyze_dataset_artifact(
+    *,
+    args,
+    dataset,
+    base_dir: str,
+    stem: str,
+    artifact_info: dict,
+    seed: int,
+) -> dict:
+    analysis_root = _analysis_root(base_dir, stem)
+    out_dir = os.path.join(analysis_root, "dataset_analysis")
+    os.makedirs(out_dir, exist_ok=True)
+
+    summary = {
+        "env": "cb",
+        "artifact_stem": stem,
+        "artifact_paths": {
+            "npz": artifact_info["npz_path"],
+            "meta_json": artifact_info["meta_path"],
+        },
+        "analysis_root": analysis_root,
+        "analysis_sequence_length": int(args.sequence_length),
+        "analysis_segment_limit": int(args.analysis_segment_limit),
+        "analysis_segment_mode": "all" if int(args.analysis_segment_limit) < 0 else "sampled",
+        "policy_mix_spec": str(getattr(dataset, "cb_policy_mix_spec", "")),
+        "policy_mix_sampling": str(getattr(dataset, "cb_policy_mix_sampling", "")),
+        "policy_mix_normal_spec": getattr(dataset, "cb_policy_mix_normal_spec", None),
+        "policy_mix_normal_mean_mode": str(getattr(dataset, "cb_policy_mix_normal_mean_mode", "")),
+        "state_semantics": str(getattr(dataset, "state_semantics", "")),
+        "seed": int(seed),
+        "analysis_spec_count": int(len(CB_SPECS)),
+    }
+    summary.update(_dataset_overview(dataset))
+    _write_base_plots(dataset, out_dir, summary)
+
+    raw_segment_limit = int(args.analysis_segment_limit)
+    exact_segments = raw_segment_limit < 0
+    segment_limit = len(dataset) if exact_segments else min(raw_segment_limit, len(dataset))
+    segment_inputs = [dataset[i][0].detach().cpu() for i in range(segment_limit)]
+    episode_limit = args.analysis_episode_limit
+    episodes = list(getattr(dataset, "episodes_tokens", []) or [])
+    if episode_limit is not None:
+        episodes = episodes[: int(episode_limit)]
+    episode_inputs = [
+        torch.from_numpy(np.asarray(ep, dtype=np.int64).reshape(-1)) for ep in episodes
+    ]
+
+    spec_names = list(CB_SPECS.keys())
+    spec_reports: dict[str, dict] = {}
+    spec_rows: list[dict] = []
+
+    spec_iter = tqdm(spec_names, desc=f"CB specs | {stem}", leave=False, unit="spec")
+    for spec_name in spec_iter:
+        spec_def = CB_SPECS[spec_name]
+        spec_args = SimpleNamespace(
+            env="cb",
+            spec=spec_name,
+            ltl_formula=None,
+            ltl_formulas=None,
+            use_safe_dfa=True,
+            dfa_backend="auto",
+            dfa_mode="single",
+            constraint_dims=[0],
+        )
+        adapter, _, raw_dfa = build_adapter_and_dfa(spec_args, dataset)
+        formulas = resolve_formulas(spec_args, dataset=dataset)
+        dfa_list = raw_dfa if isinstance(raw_dfa, list) else [raw_dfa]
+        formula_reports, combined = _score_dfa_list(
+            dataset,
+            adapter,
+            dfa_list,
+            segment_inputs=segment_inputs,
+            episode_inputs=episode_inputs,
+            segment_limit=segment_limit,
+            episode_limit=episode_limit,
+        )
+
+        report = {
+            "description": spec_def.get("description"),
+            "formulas": formulas,
+            "formula_reports": formula_reports,
+            "combined": combined,
+        }
+        spec_reports[spec_name] = report
+        spec_rows.append(
+            {
+                "spec": spec_name,
+                "description": spec_def.get("description"),
+                "formula": formulas[0] if formulas else None,
+                "segment_satisfaction_all_rate": combined.get("segment_satisfaction_all_rate"),
+                "episode_satisfaction_all_rate": combined.get("episode_satisfaction_all_rate"),
+                "segment_satisfied_all_count": combined.get("segment_satisfied_all_count"),
+                "episode_satisfied_all_count": combined.get("episode_satisfied_all_count"),
+            }
+        )
+
+    summary["spec_order"] = spec_names
+    summary["spec_reports"] = spec_reports
+    summary["spec_summary_rows"] = spec_rows
+
+    _write_spec_report_plots(out_dir, spec_names, spec_reports)
+
+    csv_path = os.path.join(out_dir, "spec_satisfaction.csv")
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        f.write(
+            "spec,description,formula,segment_satisfaction_all_rate,episode_satisfaction_all_rate,"
+            "segment_satisfied_all_count,episode_satisfied_all_count\n"
+        )
+        for row in spec_rows:
+            f.write(
+                f"{row['spec']},{json.dumps(row['description'])},{json.dumps(row['formula'])},"
+                f"{row['segment_satisfaction_all_rate']},{row['episode_satisfaction_all_rate']},"
+                f"{row['segment_satisfied_all_count']},{row['episode_satisfied_all_count']}\n"
+            )
+
+    summary["analysis_outputs"] = {
+        "summary_json": os.path.join(out_dir, "summary.json"),
+        "spec_satisfaction_csv": csv_path,
+        "plots_dir": out_dir,
+    }
+
+    _write_json(summary["analysis_outputs"]["summary_json"], summary)
+    print(f"[analysis] wrote {summary['analysis_outputs']['summary_json']}")
+    return summary
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    base_dir = os.path.abspath(args.dataset_artifact_dir)
+    os.makedirs(base_dir, exist_ok=True)
+
+    policy_mix_specs = _dataset_spec_list(args)
+    total_jobs = len(policy_mix_specs) * len(args.state_semantics) * len(args.seeds)
+
+    created: list[dict] = []
+    skipped: list[dict] = []
+    analysis_skipped: list[dict] = []
+
+    artifact_iter = tqdm(
+        [
+            (semantics, mix_spec, seed)
+            for semantics in args.state_semantics
+            for mix_spec in policy_mix_specs
+            for seed in args.seeds
+        ],
+        total=total_jobs,
+        desc="CB artifacts",
+        unit="artifact",
+    )
+
+    for semantics, mix_spec, seed in artifact_iter:
+        stem = _artifact_stem(args.dataset_artifact_name, semantics, mix_spec, seed)
+        npz_path, meta_path = _artifact_paths(base_dir, stem)
+        analysis_summary_path = _analysis_summary_path(base_dir, stem)
+        artifact_done = os.path.exists(npz_path) and os.path.exists(meta_path)
+        analysis_done = os.path.exists(analysis_summary_path)
+
+        artifact_iter.set_postfix_str(f"{semantics} | seed={seed} | {_slug(mix_spec)}")
+
+        if args.skip_existing and artifact_done and (not args.analyze_all_specs or analysis_done):
+            skipped.append(
+                {
+                    "seed": int(seed),
+                    "state_semantics": semantics,
+                    "policy_mix_spec": mix_spec,
+                    "npz_path": npz_path,
+                    "meta_path": meta_path,
+                    "analysis_summary_path": analysis_summary_path if args.analyze_all_specs else None,
+                }
+            )
+            continue
+
+        dataset = _make_dataset(args, mix_spec, semantics, seed)
+
+        if not artifact_done:
+            info = _save_dataset_artifact(base_dir, stem, args, dataset, mix_spec, semantics, seed)
+            created.append(
+                {
+                    "seed": int(seed),
+                    "state_semantics": semantics,
+                    "policy_mix_spec": mix_spec,
+                    "npz_path": info["npz_path"],
+                    "meta_path": info["meta_path"],
+                    "num_segments": int(len(dataset)),
+                    "num_episodes": int(len(dataset.episodes_tokens)),
+                    "episode_length_mean": float(
+                        np.mean([len(ep) - 1 for ep in dataset.episodes_tokens])
+                    )
+                    if getattr(dataset, "episodes_tokens", None)
+                    else 0.0,
+                }
+            )
+            print(f"[created] semantics={semantics} mix={mix_spec} seed={seed} -> {info['npz_path']}")
+        else:
+            created.append(
+                {
+                    "seed": int(seed),
+                    "state_semantics": semantics,
+                    "policy_mix_spec": mix_spec,
+                    "npz_path": npz_path,
+                    "meta_path": meta_path,
+                    "num_segments": int(len(dataset)),
+                    "num_episodes": int(len(dataset.episodes_tokens)),
+                    "episode_length_mean": float(
+                        np.mean([len(ep) - 1 for ep in dataset.episodes_tokens])
+                    )
+                    if getattr(dataset, "episodes_tokens", None)
+                    else 0.0,
+                    "reused_existing_artifact": True,
+                }
+            )
+
+        if args.analyze_all_specs:
+            artifact_info = {"npz_path": npz_path, "meta_path": meta_path}
+            if not analysis_done or not args.skip_existing:
+                _analyze_dataset_artifact(
+                    args=args,
+                    dataset=dataset,
+                    base_dir=base_dir,
+                    stem=stem,
+                    artifact_info=artifact_info,
+                    seed=int(seed),
+                )
+            else:
+                analysis_skipped.append(
+                    {
+                        "seed": int(seed),
+                        "state_semantics": semantics,
+                        "policy_mix_spec": mix_spec,
+                        "analysis_summary_path": analysis_summary_path,
+                    }
+                )
+
+    manifest = {
+        "output_root": base_dir,
+        "dataset_artifact_name": args.dataset_artifact_name,
+        "mode": "full_simplex" if bool(args.full_simplex) else "explicit_mix_list",
+        "policy_names": list(args.policy_names),
+        "mix_grid_step": float(args.mix_grid_step) if bool(args.full_simplex) else None,
+        "policy_mix_spec_count": len(policy_mix_specs),
+        "policy_mix_spec_preview": policy_mix_specs[:20],
+        "state_semantics": list(args.state_semantics),
+        "seeds": [int(s) for s in args.seeds],
+        "num_episodes": int(args.num_episodes),
+        "max_steps": int(args.max_steps),
+        "sequence_length": int(args.sequence_length),
+        "stochastic": bool(args.stochastic),
+        "policy_mix_sampling": str(args.policy_mix_sampling),
+        "policy_mix_normal_spec": args.policy_mix_normal_spec,
+        "policy_mix_normal_mean_mode": str(args.policy_mix_normal_mean_mode),
+        "skip_existing": bool(args.skip_existing),
+        "analyze_all_specs": bool(args.analyze_all_specs),
+        "analysis_segment_limit": int(args.analysis_segment_limit),
+        "analysis_segment_mode": "all" if int(args.analysis_segment_limit) < 0 else "sampled",
+        "analysis_episode_limit": args.analysis_episode_limit,
+        "jobs_total": int(total_jobs),
+        "created_count": int(len(created)),
+        "skipped_count": int(len(skipped)),
+        "analysis_skipped_count": int(len(analysis_skipped)),
+        "created_preview": created[:20],
+        "skipped_preview": skipped[:20],
+        "analysis_skipped_preview": analysis_skipped[:20],
+    }
+    _write_json(os.path.join(base_dir, "colorbomb_dataset_manifest.json"), manifest)
+
+    print(
+        f"[done] created={len(created)} skipped={len(skipped)} analysis_skipped={len(analysis_skipped)} "
+        f"output_dir={base_dir}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

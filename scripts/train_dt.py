@@ -178,6 +178,15 @@ def get_arg_parser(add_help=True):
             "Files written: <stem>.npz and <stem>.meta.json."
         ),
     )
+    p.add_argument(
+        "--dataset_artifact_path",
+        type=str,
+        default=None,
+        help=(
+            "Path to a prebuilt dataset artifact (.npz, .meta.json, or stem). "
+            "If provided, training loads the dataset from disk instead of generating it."
+        ),
+    )
     return p
 
 
@@ -503,9 +512,9 @@ def train(args):
     return model, base_dataset, run_dir
 
 
-def main():
+def main(argv=None):
     parser = get_arg_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     train(args)
 
 

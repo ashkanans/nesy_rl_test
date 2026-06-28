@@ -91,9 +91,9 @@ def parse_eval_args():
     return parser
 
 
-def main():
+def main(argv=None):
     parser = parse_eval_args()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     args = apply_smoke_mode(args)
 
     if args.checkpoint is None and not args.allow_train_fallback:

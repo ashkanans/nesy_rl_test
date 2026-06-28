@@ -22,6 +22,7 @@ import FiniteStateMachine as FSM
 from FiniteStateMachine import DFA
 
 from datasets.cb_dataset import CBSequenceDataset
+from datasets.artifact_io import load_sequence_dataset_artifact, save_sequence_dataset_artifact
 from dfa_adapter import TTDFAAdapter, get_num_bins_per_dim_for_env
 from dfa_utils import export_dfa_artifacts
 from datasets.dsrl_dataset import DSRLSequenceDataset
@@ -102,91 +103,7 @@ def _to_object_array(items):
 
 
 def save_dataset_artifact(args, dataset, artifact_tag: str = "dataset_snapshot"):
-    """
-    Persist generated offline dataset for reproducibility and later analysis.
-
-    Saves:
-      - <stem>.npz with episodes_tokens (+ optional rewards/labels/indices)
-      - <stem>.meta.json with dataset/config summary
-    """
-    if not bool(getattr(args, "save_generated_dataset", True)):
-        return None
-
-    base_dir = getattr(args, "dataset_artifact_dir", None)
-    if not base_dir:
-        run_root = getattr(args, "run_dir", None) or getattr(args, "save_path", None)
-        if run_root is None:
-            run_root = os.path.join(getattr(args, "base_runs_dir", "runs"), "dataset_artifacts")
-        base_dir = os.path.join(str(run_root), "dataset_artifacts")
-    os.makedirs(base_dir, exist_ok=True)
-
-    stem = str(getattr(args, "dataset_artifact_name", None) or artifact_tag).strip()
-    if stem.lower().endswith(".npz"):
-        stem = stem[:-4]
-    if not stem:
-        stem = "dataset_snapshot"
-
-    npz_path = os.path.join(base_dir, f"{stem}.npz")
-    meta_path = os.path.join(base_dir, f"{stem}.meta.json")
-
-    episodes_tokens = list(getattr(dataset, "episodes_tokens", []) or [])
-    episode_rewards = getattr(dataset, "episode_rewards", None)
-    episode_policy_labels = getattr(dataset, "episode_policy_labels", None)
-    indices = getattr(dataset, "indices", None)
-
-    payload = {
-        "episodes_tokens": _to_object_array(episodes_tokens),
-    }
-    if episode_rewards is not None:
-        payload["episode_rewards"] = _to_object_array(list(episode_rewards))
-    if episode_policy_labels is not None:
-        payload["episode_policy_labels"] = np.asarray(list(episode_policy_labels), dtype=object)
-    if indices is not None:
-        payload["indices"] = np.asarray(list(indices), dtype=np.int64)
-
-    np.savez_compressed(npz_path, **payload)
-
-    lengths = [int(np.asarray(ep).shape[0]) for ep in episodes_tokens]
-    rewards_per_episode = (
-        [float(np.asarray(r).sum()) for r in episode_rewards] if episode_rewards is not None else None
-    )
-    metadata = {
-        "saved_at_unix": float(time.time()),
-        "artifact_tag": str(artifact_tag),
-        "env": str(getattr(args, "env", "")),
-        "seed": int(getattr(args, "seed", 0)),
-        "spec": getattr(args, "spec", None),
-        "dataset_class": dataset.__class__.__name__,
-        "schema_id": getattr(dataset, "schema_id", None),
-        "observation_dim": int(getattr(dataset, "observation_dim", 0) or 0),
-        "action_dim": int(getattr(dataset, "action_dim", 0) or 0),
-        "joined_dim": int(getattr(dataset, "joined_dim", 0) or 0),
-        "rows_per_seg": int(getattr(dataset, "rows_per_seg", 0) or 0),
-        "required_rows": int(getattr(dataset, "required_rows", 0) or 0),
-        "num_segments": int(len(dataset)),
-        "num_episodes": int(len(episodes_tokens)),
-        "episode_length_min": int(min(lengths)) if lengths else 0,
-        "episode_length_max": int(max(lengths)) if lengths else 0,
-        "episode_length_mean": float(np.mean(lengths)) if lengths else 0.0,
-        "episode_return_mean": float(np.mean(rewards_per_episode))
-        if rewards_per_episode
-        else None,
-        "episode_return_min": float(np.min(rewards_per_episode))
-        if rewards_per_episode
-        else None,
-        "episode_return_max": float(np.max(rewards_per_episode))
-        if rewards_per_episode
-        else None,
-        "dataset_config": {k: _to_jsonable(v) for k, v in vars(args).items()},
-        "paths": {
-            "npz": npz_path,
-            "meta_json": meta_path,
-        },
-    }
-    with open(meta_path, "w") as f:
-        json.dump(metadata, f, indent=2, sort_keys=True)
-
-    return {"npz_path": npz_path, "meta_path": meta_path}
+    return save_sequence_dataset_artifact(args, dataset, artifact_tag=artifact_tag)
 
 
 def build_product_dfa(dfas):
@@ -382,6 +299,14 @@ def build_model(args, dataset, vocab_size):
 
 
 def build_dataset(args):
+    artifact_path = getattr(args, "dataset_artifact_path", None)
+    if artifact_path:
+        sequence_length = int(args.block_size)
+        return load_sequence_dataset_artifact(
+            artifact_path,
+            sequence_length=sequence_length,
+            target_shift=args.target_shift,
+        )
     if args.env == "frozenlake":
         num_episodes = int(args.num_episodes)
         max_steps = int(args.max_steps)
@@ -1471,6 +1396,15 @@ def get_arg_parser(add_help=True):
         help=(
             "Base filename stem for dataset artifacts. "
             "Files written: <stem>.npz and <stem>.meta.json."
+        ),
+    )
+    p.add_argument(
+        "--dataset_artifact_path",
+        type=str,
+        default=None,
+        help=(
+            "Path to a prebuilt dataset artifact (.npz, .meta.json, or stem). "
+            "If provided, training/evaluation load this artifact instead of generating a new dataset."
         ),
     )
     p.add_argument(

@@ -560,13 +560,13 @@ def _train_baselines(job: Job, cfg: WorkerConfig) -> tuple[str, str | None]:
         artifact_dir = cfg.dataset_artifact_dir or os.path.join(job.seed_root, "dataset_artifacts")
         artifact_npz = os.path.join(artifact_dir, f"{artifact_name}.npz")
         artifact_meta = os.path.join(artifact_dir, f"{artifact_name}.meta.json")
-        if cfg.save_generated_dataset:
-            if os.path.exists(artifact_npz) and os.path.exists(artifact_meta):
-                cmd.append("--no-save_generated_dataset")
-            else:
-                cmd.extend(["--save_generated_dataset"])
-                cmd.extend(["--dataset_artifact_dir", artifact_dir])
-                cmd.extend(["--dataset_artifact_name", artifact_name])
+        if os.path.exists(artifact_npz) and os.path.exists(artifact_meta):
+            cmd.extend(["--dataset_artifact_path", artifact_npz])
+            cmd.append("--no-save_generated_dataset")
+        elif cfg.save_generated_dataset:
+            cmd.extend(["--save_generated_dataset"])
+            cmd.extend(["--dataset_artifact_dir", artifact_dir])
+            cmd.extend(["--dataset_artifact_name", artifact_name])
         else:
             cmd.append("--no-save_generated_dataset")
         dynamics_ckpt = _shared_dynamics_checkpoint_path(job, cfg)
@@ -632,6 +632,12 @@ def _evaluate_mode(job: Job, cfg: WorkerConfig, mode: str) -> tuple[str, dict[st
         )
         eval_cmd.extend(cfg.extra_args)
         # Eval can run many times per seed (baseline x decoding mode); never save datasets here.
+        artifact_name = _build_seed_dataset_artifact_name(job, cfg)
+        artifact_dir = cfg.dataset_artifact_dir or os.path.join(job.seed_root, "dataset_artifacts")
+        artifact_npz = os.path.join(artifact_dir, f"{artifact_name}.npz")
+        artifact_meta = os.path.join(artifact_dir, f"{artifact_name}.meta.json")
+        if os.path.exists(artifact_npz) and os.path.exists(artifact_meta):
+            eval_cmd.extend(["--dataset_artifact_path", artifact_npz])
         eval_cmd.append("--no-save_generated_dataset")
 
         eval_log = os.path.join(baseline_dir, "console.log")
