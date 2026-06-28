@@ -24,7 +24,13 @@ SUITE_REGISTRY = {
         "v1": [
             "avoid_state_11",
             "avoid_unsafe",
-        ]
+        ],
+        "v2": [
+            "avoid_state_11",
+            "avoid_unsafe",
+            "reach_goal",
+            "reach_goal_while_avoid_unsafe",
+        ],
     },
     "dsrl": {
         "v1": [

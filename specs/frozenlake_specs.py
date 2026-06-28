@@ -27,6 +27,10 @@ def build_frozenlake_formulas(preset, hole_state_ids, goal_state_ids, include_po
     if preset == "bounded_reach_goal_while_avoid_holes":
         # Weak bounded-like proxy: avoid holes and enforce eventually goal within finite trace.
         return [f"G(!({hole_expr})) & F({goal_expr})"]
+    if preset == "never_move_left":
+        return ["G(!(a0_bin0))"]
+    if preset == "reach_goal_no_left":
+        return [f"G(!(a0_bin0)) & F({goal_expr})"]
     raise ValueError(f"Unknown FrozenLake preset '{preset}'")
 
 
@@ -65,6 +69,26 @@ SPECS = {
         "description": "Finite-horizon proxy for bounded reach-while-safe.",
         "formulas": build_frozenlake_formulas(
             "bounded_reach_goal_while_avoid_holes", DEFAULT_HOLE_IDS_4x4, DEFAULT_GOAL_IDS_4x4
+        ),
+        "propositions": {
+            "hole": [f"s0_bin{x}" for x in DEFAULT_HOLE_IDS_4x4],
+            "goal": [f"s0_bin{x}" for x in DEFAULT_GOAL_IDS_4x4],
+        },
+    },
+    "never_move_left": {
+        "description": "Never take the LEFT action (a0_bin0). Tests action-level constraint without state grounding.",
+        "formulas": build_frozenlake_formulas(
+            "never_move_left", DEFAULT_HOLE_IDS_4x4, DEFAULT_GOAL_IDS_4x4
+        ),
+        "propositions": {
+            "hole": [f"s0_bin{x}" for x in DEFAULT_HOLE_IDS_4x4],
+            "goal": [f"s0_bin{x}" for x in DEFAULT_GOAL_IDS_4x4],
+        },
+    },
+    "reach_goal_no_left": {
+        "description": "Reach the goal using only RIGHT, DOWN, and UP. Feasible on the default 4x4 and 8x8 maps.",
+        "formulas": build_frozenlake_formulas(
+            "reach_goal_no_left", DEFAULT_HOLE_IDS_4x4, DEFAULT_GOAL_IDS_4x4
         ),
         "propositions": {
             "hole": [f"s0_bin{x}" for x in DEFAULT_HOLE_IDS_4x4],

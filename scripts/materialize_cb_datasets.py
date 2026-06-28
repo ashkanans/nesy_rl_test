@@ -116,14 +116,19 @@ def _artifact_stem(base_name: str, semantics: str, mix_spec: str, seed: int) -> 
     return _slug(f"{base_name}_{semantics}_{mix_slug}_seed{int(seed)}")
 
 
+def _artifact_dir(base_dir: str, stem: str) -> str:
+    return os.path.join(base_dir, stem)
+
+
 def _artifact_paths(base_dir: str, stem: str) -> tuple[str, str]:
-    npz_path = os.path.join(base_dir, f"{stem}.npz")
-    meta_path = os.path.join(base_dir, f"{stem}.meta.json")
+    artifact_dir = _artifact_dir(base_dir, stem)
+    npz_path = os.path.join(artifact_dir, f"{stem}.npz")
+    meta_path = os.path.join(artifact_dir, f"{stem}.meta.json")
     return npz_path, meta_path
 
 
 def _analysis_root(base_dir: str, stem: str) -> str:
-    return os.path.join(base_dir, f"{stem}.analysis")
+    return os.path.join(_artifact_dir(base_dir, stem), "analysis")
 
 
 def _analysis_summary_path(base_dir: str, stem: str) -> str:
@@ -173,7 +178,7 @@ def parse_args(argv: list[str] | None = None):
         "--state_semantics",
         nargs="+",
         default=["pre", "post"],
-        choices=["pre", "post"],
+        choices=["pre", "post", "both"],
         help="CB state semantics to materialize.",
     )
     p.add_argument(
@@ -242,6 +247,20 @@ def _dataset_spec_list(args) -> list[str]:
     return list(args.policy_mix_specs)
 
 
+def _resolve_state_semantics(state_semantics: list[str]) -> list[str]:
+    resolved: list[str] = []
+    for semantics in state_semantics:
+        if semantics == "both":
+            resolved.extend(["pre", "post"])
+        else:
+            resolved.append(str(semantics))
+    deduped: list[str] = []
+    for semantics in resolved:
+        if semantics not in deduped:
+            deduped.append(semantics)
+    return deduped
+
+
 def _make_dataset(args, mix_spec: str, semantics: str, seed: int) -> CBSequenceDataset:
     return CBSequenceDataset(
         num_episodes=int(args.num_episodes),
@@ -258,12 +277,13 @@ def _make_dataset(args, mix_spec: str, semantics: str, seed: int) -> CBSequenceD
 
 
 def _save_dataset_artifact(base_dir: str, stem: str, args, dataset, mix_spec: str, semantics: str, seed: int):
+    artifact_dir = _artifact_dir(base_dir, stem)
     ds_args = argparse.Namespace(
         env="cb",
         seed=int(seed),
         spec=None,
         save_generated_dataset=True,
-        dataset_artifact_dir=base_dir,
+        dataset_artifact_dir=artifact_dir,
         dataset_artifact_name=stem,
         num_episodes=int(args.num_episodes),
         max_steps=int(args.max_steps),
@@ -337,6 +357,8 @@ def _dataset_overview(dataset) -> dict:
 def _write_base_plots(dataset, out_dir: str, summary: dict) -> None:
     try:
         import matplotlib.pyplot as plt
+        from matplotlib import cm
+        from matplotlib.colors import Normalize
     except Exception:
         return
 
@@ -366,6 +388,86 @@ def _write_base_plots(dataset, out_dir: str, summary: dict) -> None:
         plt.tight_layout()
         plt.savefig(os.path.join(out_dir, "state_hist.png"))
         plt.close()
+
+        state_counts = np.zeros(int(dataset.env.observation_space.n), dtype=np.int64)
+        for sid in state_ids:
+            sid_int = int(sid)
+            if 0 <= sid_int < state_counts.shape[0]:
+                state_counts[sid_int] += 1
+
+        state_csv_path = os.path.join(out_dir, "state_visitation.csv")
+        with open(state_csv_path, "w", encoding="utf-8", newline="") as f:
+            f.write("state_id,visit_count\n")
+            for sid, count in enumerate(state_counts.tolist()):
+                f.write(f"{int(sid)},{int(count)}\n")
+
+        env = dataset.env
+        n_rows = int(getattr(env, "n_rows", 0) or 0)
+        n_cols = int(getattr(env, "n_cols", 0) or 0)
+        if n_rows > 0 and n_cols > 0:
+            grid_counts = np.zeros((n_rows, n_cols), dtype=np.int64)
+            for sid, count in enumerate(state_counts.tolist()):
+                r, c = divmod(int(sid), n_cols)
+                if 0 <= r < n_rows and 0 <= c < n_cols:
+                    grid_counts[r, c] = int(count)
+
+            vmax = int(grid_counts.max()) if grid_counts.size else 0
+            norm = Normalize(vmin=0, vmax=max(1, vmax))
+            cmap = plt.get_cmap("Reds")
+
+            plt.figure(figsize=(max(6, n_cols * 0.85), max(6, n_rows * 0.85)))
+            ax = plt.gca()
+            ax.set_xlim(0, n_cols)
+            ax.set_ylim(n_rows, 0)
+            ax.set_aspect("equal")
+            ax.set_xticks(range(n_cols + 1))
+            ax.set_yticks(range(n_rows + 1))
+            ax.grid(color="#cbd5e1", linewidth=0.6)
+
+            grid = getattr(env, "grid", None)
+            for r in range(n_rows):
+                for c in range(n_cols):
+                    count = int(grid_counts[r, c])
+                    color = cmap(norm(count))
+                    ax.add_patch(
+                        plt.Rectangle((c, r), 1, 1, facecolor=color, edgecolor="#94a3b8", linewidth=0.8)
+                    )
+                    cell_label = ""
+                    if grid is not None:
+                        cell_label = str(grid[r][c])
+                    state_id = r * n_cols + c
+                    text_color = "#111827" if count < max(1, vmax * 0.35) else "#ffffff"
+                    label = f"{state_id}\n{count}"
+                    ax.text(
+                        c + 0.5,
+                        r + 0.52,
+                        label,
+                        ha="center",
+                        va="center",
+                        fontsize=8,
+                        color=text_color,
+                        fontweight="bold",
+                    )
+                    if cell_label and cell_label not in {".", "#"}:
+                        ax.text(
+                            c + 0.5,
+                            r + 0.18,
+                            cell_label,
+                            ha="center",
+                            va="center",
+                            fontsize=7,
+                            color=text_color,
+                        )
+
+            title = "CB state visitation heatmap"
+            ax.set_title(title)
+            ax.set_xticklabels([])
+            ax.set_yticklabels([])
+            cbar = plt.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), ax=ax, fraction=0.046, pad=0.04)
+            cbar.set_label("Visit count")
+            plt.tight_layout()
+            plt.savefig(os.path.join(out_dir, "state_visitation_heatmap.png"))
+            plt.close()
 
     if rewards:
         returns = [float(np.sum(np.asarray(r, dtype=np.float32))) for r in rewards]
@@ -453,6 +555,8 @@ def _score_dfa_list(
     formula_reports = []
     segment_masks = []
     episode_masks = []
+    segment_scores_per_formula = []
+    episode_scores_per_formula = []
 
     for formula_idx, dfa in enumerate(dfa_list):
         seg_scores = []
@@ -464,6 +568,7 @@ def _score_dfa_list(
             )
             sat = adapter.batch_check_dfa_sat(seg_batch, dfa)
             seg_scores = [float(x) for x in sat.detach().cpu().tolist()]
+        segment_scores_per_formula.append(np.asarray(seg_scores, dtype=np.float32))
         seg_mask = np.asarray(seg_scores, dtype=np.float32) >= 0.5 if seg_scores else np.asarray([])
         segment_masks.append(seg_mask)
 
@@ -472,6 +577,7 @@ def _score_dfa_list(
         for ep in ep_iter:
             sat = adapter.batch_check_dfa_sat(ep.unsqueeze(0), dfa)
             ep_scores.append(float(sat[0].item()))
+        episode_scores_per_formula.append(np.asarray(ep_scores, dtype=np.float32))
         ep_mask = np.asarray(ep_scores, dtype=np.float32) >= 0.5 if ep_scores else np.asarray([])
         episode_masks.append(ep_mask)
 
@@ -522,7 +628,10 @@ def _score_dfa_list(
             combined["episode_satisfied_all_count"] = int(np.sum(all_mask))
             combined["episode_satisfied_any_count"] = int(np.sum(any_mask))
 
-    return formula_reports, combined
+    return formula_reports, combined, {
+        "segment_scores": segment_scores_per_formula,
+        "episode_scores": episode_scores_per_formula,
+    }
 
 
 def _write_spec_report_plots(out_dir: str, spec_names: list[str], spec_reports: dict[str, dict]) -> None:
@@ -554,6 +663,109 @@ def _write_spec_report_plots(out_dir: str, spec_names: list[str], spec_reports: 
     plt.tight_layout()
     plt.savefig(os.path.join(out_dir, "spec_satisfaction_bar.png"))
     plt.close()
+
+
+def _episode_outcome_arrays(dataset, episode_count: int | None = None):
+    episodes = list(getattr(dataset, "episodes_tokens", []) or [])
+    rewards = list(getattr(dataset, "episode_rewards", []) or [])
+    n = len(episodes)
+    if episode_count is not None:
+        n = min(n, int(episode_count))
+
+    returns = np.zeros(n, dtype=np.float32)
+    goal_mask = np.zeros(n, dtype=bool)
+    bomb_mask = np.zeros(n, dtype=bool)
+    timeout_mask = np.zeros(n, dtype=bool)
+    other_mask = np.zeros(n, dtype=bool)
+
+    env_cfg = getattr(getattr(dataset, "env", None), "cfg", None)
+    max_steps_cfg = int(getattr(env_cfg, "max_steps", 200))
+    step_r = float(getattr(env_cfg, "step_reward", -0.01))
+    goal_r = float(getattr(env_cfg, "goal_reward", 1.0))
+    bomb_r = float(getattr(env_cfg, "bomb_reward", -1.0))
+    goal_thresh = 0.5 * (step_r + goal_r)
+    bomb_thresh = 0.5 * (step_r + bomb_r)
+
+    for idx in range(n):
+        rew = np.asarray(rewards[idx], dtype=np.float32) if idx < len(rewards) else np.asarray([], dtype=np.float32)
+        returns[idx] = float(np.sum(rew)) if rew.size else 0.0
+        if rew.size == 0:
+            other_mask[idx] = True
+            continue
+
+        last = float(rew[-1])
+        if int(rew.shape[0]) >= max_steps_cfg:
+            timeout_mask[idx] = True
+        elif last >= goal_thresh:
+            goal_mask[idx] = True
+        elif last <= bomb_thresh:
+            bomb_mask[idx] = True
+        else:
+            other_mask[idx] = True
+
+    return {
+        "returns": returns,
+        "goal_mask": goal_mask,
+        "bomb_mask": bomb_mask,
+        "timeout_mask": timeout_mask,
+        "other_mask": other_mask,
+    }
+
+
+def _safe_mean_std(values: np.ndarray) -> tuple[float | None, float | None]:
+    if values.size == 0:
+        return None, None
+    return float(np.mean(values)), float(np.std(values, ddof=0))
+
+
+def _write_spec_outcome_plots(out_dir: str, spec_names: list[str], spec_rows: list[dict]) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        return
+
+    if not spec_names:
+        return
+
+    metric_specs = [
+        ("satisfaction_mean", "satisfaction_sd", "Episode satisfaction rate"),
+        ("goal_hit_mean_on_satisfied", "goal_hit_sd_on_satisfied", "Goal-hit rate on satisfied episodes"),
+        ("bomb_hit_mean_on_satisfied", "bomb_hit_sd_on_satisfied", "Bomb-hit rate on satisfied episodes"),
+        ("return_mean_on_satisfied", "return_sd_on_satisfied", "Return on satisfied episodes"),
+    ]
+
+    x = np.arange(len(spec_names))
+    fig, axes = plt.subplots(2, 2, figsize=(max(12, len(spec_names) * 0.9), 8.5))
+    axes = axes.flatten()
+
+    for ax, (mean_key, sd_key, title) in zip(axes, metric_specs):
+        means = [
+            float(row[mean_key]) if row.get(mean_key) is not None and np.isfinite(row[mean_key]) else np.nan
+            for row in spec_rows
+        ]
+        sds = [
+            float(row[sd_key]) if row.get(sd_key) is not None and np.isfinite(row[sd_key]) else np.nan
+            for row in spec_rows
+        ]
+        ax.bar(x, means, yerr=sds, capsize=3, color="#2563eb")
+        ax.set_title(title)
+        ax.set_xticks(x)
+        ax.set_xticklabels(spec_names, rotation=25, ha="right")
+        ax.grid(axis="y", alpha=0.2)
+        if "Return" in title:
+            finite_means = np.asarray([m for m in means if np.isfinite(m)], dtype=np.float32)
+            finite_sds = np.asarray([s for s in sds if np.isfinite(s)], dtype=np.float32)
+            if finite_means.size:
+                lo = float(np.min(finite_means - finite_sds)) if finite_sds.size else float(np.min(finite_means))
+                hi = float(np.max(finite_means + finite_sds)) if finite_sds.size else float(np.max(finite_means))
+                pad = max(0.1, 0.1 * (hi - lo if hi > lo else 1.0))
+                ax.set_ylim(lo - pad, hi + pad)
+        else:
+            ax.set_ylim(0.0, 1.0)
+
+    fig.tight_layout()
+    fig.savefig(os.path.join(out_dir, "spec_outcome_stats_bar.png"))
+    plt.close(fig)
 
 
 def _analyze_dataset_artifact(
@@ -602,10 +814,12 @@ def _analyze_dataset_artifact(
     episode_inputs = [
         torch.from_numpy(np.asarray(ep, dtype=np.int64).reshape(-1)) for ep in episodes
     ]
+    outcome_arrays = _episode_outcome_arrays(dataset, episode_count=len(episode_inputs))
 
     spec_names = list(CB_SPECS.keys())
     spec_reports: dict[str, dict] = {}
     spec_rows: list[dict] = []
+    outcome_rows: list[dict] = []
 
     spec_iter = tqdm(spec_names, desc=f"CB specs | {stem}", leave=False, unit="spec")
     for spec_name in spec_iter:
@@ -623,7 +837,7 @@ def _analyze_dataset_artifact(
         adapter, _, raw_dfa = build_adapter_and_dfa(spec_args, dataset)
         formulas = resolve_formulas(spec_args, dataset=dataset)
         dfa_list = raw_dfa if isinstance(raw_dfa, list) else [raw_dfa]
-        formula_reports, combined = _score_dfa_list(
+        formula_reports, combined, score_detail = _score_dfa_list(
             dataset,
             adapter,
             dfa_list,
@@ -632,6 +846,20 @@ def _analyze_dataset_artifact(
             segment_limit=segment_limit,
             episode_limit=episode_limit,
         )
+        episode_scores = score_detail["episode_scores"][0] if score_detail["episode_scores"] else np.asarray([], dtype=np.float32)
+        episode_sat_mask = (
+            np.asarray(episode_scores, dtype=np.float32) >= 0.5
+            if episode_scores.size
+            else np.asarray([], dtype=bool)
+        )
+        sat_count = int(np.sum(episode_sat_mask)) if episode_sat_mask.size else 0
+        sat_returns = outcome_arrays["returns"][episode_sat_mask] if episode_sat_mask.size else np.asarray([], dtype=np.float32)
+        sat_goal = outcome_arrays["goal_mask"][episode_sat_mask] if episode_sat_mask.size else np.asarray([], dtype=bool)
+        sat_bomb = outcome_arrays["bomb_mask"][episode_sat_mask] if episode_sat_mask.size else np.asarray([], dtype=bool)
+        sat_satisfaction_mean, sat_satisfaction_sd = _safe_mean_std(episode_sat_mask.astype(np.float32))
+        goal_mean, goal_sd = _safe_mean_std(sat_goal.astype(np.float32)) if sat_count else (None, None)
+        bomb_mean, bomb_sd = _safe_mean_std(sat_bomb.astype(np.float32)) if sat_count else (None, None)
+        ret_mean, ret_sd = _safe_mean_std(np.asarray(sat_returns, dtype=np.float32)) if sat_count else (None, None)
 
         report = {
             "description": spec_def.get("description"),
@@ -651,12 +879,31 @@ def _analyze_dataset_artifact(
                 "episode_satisfied_all_count": combined.get("episode_satisfied_all_count"),
             }
         )
+        outcome_rows.append(
+            {
+                "spec": spec_name,
+                "description": spec_def.get("description"),
+                "formula": formulas[0] if formulas else None,
+                "episode_sample_size": int(episode_sat_mask.size),
+                "satisfaction_mean": sat_satisfaction_mean,
+                "satisfaction_sd": sat_satisfaction_sd,
+                "satisfied_episode_count": sat_count,
+                "goal_hit_mean_on_satisfied": goal_mean,
+                "goal_hit_sd_on_satisfied": goal_sd,
+                "bomb_hit_mean_on_satisfied": bomb_mean,
+                "bomb_hit_sd_on_satisfied": bomb_sd,
+                "return_mean_on_satisfied": ret_mean,
+                "return_sd_on_satisfied": ret_sd,
+            }
+        )
 
     summary["spec_order"] = spec_names
     summary["spec_reports"] = spec_reports
     summary["spec_summary_rows"] = spec_rows
+    summary["spec_outcome_rows"] = outcome_rows
 
     _write_spec_report_plots(out_dir, spec_names, spec_reports)
+    _write_spec_outcome_plots(out_dir, spec_names, outcome_rows)
 
     csv_path = os.path.join(out_dir, "spec_satisfaction.csv")
     with open(csv_path, "w", encoding="utf-8", newline="") as f:
@@ -671,9 +918,31 @@ def _analyze_dataset_artifact(
                 f"{row['segment_satisfied_all_count']},{row['episode_satisfied_all_count']}\n"
             )
 
+    outcome_csv_path = os.path.join(out_dir, "spec_outcome_stats.csv")
+    with open(outcome_csv_path, "w", encoding="utf-8", newline="") as f:
+        f.write(
+            "spec,description,formula,episode_sample_size,satisfaction_mean,satisfaction_sd,"
+            "satisfied_episode_count,goal_hit_mean_on_satisfied,goal_hit_sd_on_satisfied,"
+            "bomb_hit_mean_on_satisfied,bomb_hit_sd_on_satisfied,return_mean_on_satisfied,"
+            "return_sd_on_satisfied\n"
+        )
+        for row in outcome_rows:
+            f.write(
+                f"{row['spec']},{json.dumps(row['description'])},{json.dumps(row['formula'])},"
+                f"{row['episode_sample_size']},{row['satisfaction_mean']},{row['satisfaction_sd']},"
+                f"{row['satisfied_episode_count']},{row['goal_hit_mean_on_satisfied']},"
+                f"{row['goal_hit_sd_on_satisfied']},{row['bomb_hit_mean_on_satisfied']},"
+                f"{row['bomb_hit_sd_on_satisfied']},{row['return_mean_on_satisfied']},"
+                f"{row['return_sd_on_satisfied']}\n"
+            )
+
     summary["analysis_outputs"] = {
         "summary_json": os.path.join(out_dir, "summary.json"),
         "spec_satisfaction_csv": csv_path,
+        "spec_outcome_stats_csv": outcome_csv_path,
+        "spec_outcome_stats_png": os.path.join(out_dir, "spec_outcome_stats_bar.png"),
+        "state_visitation_csv": os.path.join(out_dir, "state_visitation.csv"),
+        "state_visitation_heatmap_png": os.path.join(out_dir, "state_visitation_heatmap.png"),
         "plots_dir": out_dir,
     }
 
@@ -688,7 +957,8 @@ def main(argv: list[str] | None = None) -> int:
     os.makedirs(base_dir, exist_ok=True)
 
     policy_mix_specs = _dataset_spec_list(args)
-    total_jobs = len(policy_mix_specs) * len(args.state_semantics) * len(args.seeds)
+    state_semantics = _resolve_state_semantics(list(args.state_semantics))
+    total_jobs = len(policy_mix_specs) * len(state_semantics) * len(args.seeds)
 
     created: list[dict] = []
     skipped: list[dict] = []
@@ -697,7 +967,7 @@ def main(argv: list[str] | None = None) -> int:
     artifact_iter = tqdm(
         [
             (semantics, mix_spec, seed)
-            for semantics in args.state_semantics
+            for semantics in state_semantics
             for mix_spec in policy_mix_specs
             for seed in args.seeds
         ],
@@ -797,7 +1067,8 @@ def main(argv: list[str] | None = None) -> int:
         "mix_grid_step": float(args.mix_grid_step) if bool(args.full_simplex) else None,
         "policy_mix_spec_count": len(policy_mix_specs),
         "policy_mix_spec_preview": policy_mix_specs[:20],
-        "state_semantics": list(args.state_semantics),
+        "state_semantics": state_semantics,
+        "state_semantics_requested": list(args.state_semantics),
         "seeds": [int(s) for s in args.seeds],
         "num_episodes": int(args.num_episodes),
         "max_steps": int(args.max_steps),
