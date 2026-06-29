@@ -5,8 +5,10 @@ from torch.utils.data import Dataset
 from envs.colour_bomb import (
     CBConfig,
     ColourBombGridworldV1Env,
+    _neighbors_with_actions,
     compute_cb_longest_safe_path_actions,
     compute_cb_shortest_safe_policy,
+    compute_cb_single_goal_policy,
 )
 from logic.token_schema import (
     build_end_row,
@@ -103,6 +105,14 @@ class CBSequenceDataset(Dataset):
         self.longest_any_path = compute_cb_longest_safe_path_actions(
             self.env, avoid_bombs=False, max_expansions=self.longest_path_max_expansions
         )
+        self.per_goal_safe_policies = {
+            i: compute_cb_single_goal_policy(self.env, g, avoid_bombs=True)
+            for i, g in enumerate(self.env.goal_positions)
+        }
+        self.per_goal_any_policies = {
+            i: compute_cb_single_goal_policy(self.env, g, avoid_bombs=False)
+            for i, g in enumerate(self.env.goal_positions)
+        }
 
         episodes_tokens = []
         episode_rewards = []
@@ -135,6 +145,8 @@ class CBSequenceDataset(Dataset):
                     shortest_any_policy=self.shortest_any_policy,
                     longest_safe_path=self.longest_safe_path,
                     longest_any_path=self.longest_any_path,
+                    per_goal_safe_policies=self.per_goal_safe_policies,
+                    per_goal_any_policies=self.per_goal_any_policies,
                 )
                 ns, r, done, _ = self.env.step(a)
                 token_state = int(pre_s if self.state_semantics == "pre" else ns)
@@ -219,18 +231,47 @@ class CBSequenceDataset(Dataset):
         return x, y, mask
 
 
+def _is_allowed_policy_name(name: str) -> bool:
+    if name in {"random", "shortest_safe", "longest_safe", "shortest_any", "longest_any"}:
+        return True
+    if name.startswith("epsilon_safe_"):
+        try:
+            float(name[len("epsilon_safe_"):])
+            return True
+        except ValueError:
+            pass
+    if name.startswith("epsilon_any_"):
+        try:
+            float(name[len("epsilon_any_"):])
+            return True
+        except ValueError:
+            pass
+    if name.startswith("goal_safe_"):
+        try:
+            int(name[len("goal_safe_"):])
+            return True
+        except ValueError:
+            pass
+    if name.startswith("goal_any_"):
+        try:
+            int(name[len("goal_any_"):])
+            return True
+        except ValueError:
+            pass
+    return False
+
+
 def _parse_policy_mix_spec(spec: str):
     """
     Parse strings like:
       random:0.8,shortest_safe:0.1,longest_safe:0.1
+
+    Also supports parametric names:
+      epsilon_safe_0.3   — follows shortest_safe with 30% random-safe deviations
+      epsilon_any_0.3    — follows shortest_any with 30% random deviations
+      goal_safe_4        — navigates toward goal index 4, avoiding bombs
+      goal_any_4         — navigates toward goal index 4, ignoring bombs
     """
-    allowed = {
-        "random",
-        "shortest_safe",
-        "longest_safe",
-        "shortest_any",
-        "longest_any",
-    }
     raw = str(spec or "").strip()
     if not raw:
         return ["random"], [1.0]
@@ -241,8 +282,12 @@ def _parse_policy_mix_spec(spec: str):
             raise ValueError(f"Invalid policy mix token '{p}'. Expected name:weight.")
         name, w = p.split(":", 1)
         name = name.strip()
-        if name not in allowed:
-            raise ValueError(f"Unsupported CB policy '{name}'. Allowed: {sorted(allowed)}")
+        if not _is_allowed_policy_name(name):
+            raise ValueError(
+                f"Unsupported CB policy '{name}'. "
+                "Fixed names: random, shortest_safe, longest_safe, shortest_any, longest_any. "
+                "Parametric: epsilon_safe_<float>, epsilon_any_<float>, goal_safe_<int>, goal_any_<int>."
+            )
         val = float(w.strip())
         if val < 0.0:
             raise ValueError("Policy mix weights must be non-negative.")
@@ -331,6 +376,8 @@ def _choose_action(
     shortest_any_policy: dict[int, int],
     longest_safe_path: list[int],
     longest_any_path: list[int],
+    per_goal_safe_policies: dict[int, dict[int, int]] | None = None,
+    per_goal_any_policies: dict[int, dict[int, int]] | None = None,
 ) -> int:
     if policy_name == "random":
         return int(rng.randint(env.action_space.n))
@@ -346,4 +393,31 @@ def _choose_action(
         if path_step < len(longest_any_path):
             return int(longest_any_path[path_step])
         return int(shortest_any_policy.get(int(state), rng.randint(env.action_space.n)))
+
+    if policy_name.startswith("epsilon_safe_"):
+        eps = float(policy_name[len("epsilon_safe_"):])
+        if rng.random() < eps:
+            pos = env._state_to_pos(int(state))
+            neighbors = list(_neighbors_with_actions(env, pos, avoid_bombs=True))
+            if neighbors:
+                action, _ = neighbors[int(rng.randint(len(neighbors)))]
+                return int(action)
+        return int(shortest_safe_policy.get(int(state), rng.randint(env.action_space.n)))
+
+    if policy_name.startswith("epsilon_any_"):
+        eps = float(policy_name[len("epsilon_any_"):])
+        if rng.random() < eps:
+            return int(rng.randint(env.action_space.n))
+        return int(shortest_any_policy.get(int(state), rng.randint(env.action_space.n)))
+
+    if policy_name.startswith("goal_safe_"):
+        goal_idx = int(policy_name[len("goal_safe_"):])
+        policy = (per_goal_safe_policies or {}).get(goal_idx, {})
+        return int(policy.get(int(state), rng.randint(env.action_space.n)))
+
+    if policy_name.startswith("goal_any_"):
+        goal_idx = int(policy_name[len("goal_any_"):])
+        policy = (per_goal_any_policies or {}).get(goal_idx, {})
+        return int(policy.get(int(state), rng.randint(env.action_space.n)))
+
     return int(rng.randint(env.action_space.n))
