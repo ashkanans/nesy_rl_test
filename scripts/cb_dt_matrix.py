@@ -378,9 +378,21 @@ def _write_summary_artifacts(base_dir: str, results: dict[str, dict]) -> tuple[s
     return json_path, csv_path
 
 
+def _load_rollout_stats(base_dir: str, labels: list[str]) -> dict[str, dict]:
+    """Load per-episode rollout stats for each alpha from automaton_rollout_stats.json."""
+    rollout = {}
+    for label in labels:
+        path = os.path.join(base_dir, label, "automaton_rollout_stats.json")
+        if os.path.exists(path):
+            with open(path) as f:
+                rollout[label] = json.load(f)
+    return rollout
+
+
 def _save_summary_plots(base_dir: str, results: dict[str, dict]) -> None:
     try:
         import matplotlib.pyplot as plt
+        import matplotlib.ticker as mticker
     except Exception:
         return
 
@@ -398,39 +410,139 @@ def _save_summary_plots(base_dir: str, results: dict[str, dict]) -> None:
             out.append(np.nan if val is None else float(val))
         return np.asarray(out, dtype=np.float32)
 
-    width = 0.2
+    rollout = _load_rollout_stats(base_dir, labels)
+
+    # ── 1. Multi-metric bar ───────────────────────────────────────────────────
+    width = 0.18
     x = np.arange(len(labels))
-    keys = ["goal_rate", "hazard_hit_rate", "satisfaction_rate", "return_mean"]
-    vals = [_vals(k) for k in keys]
+    bar_keys = ["goal_rate", "hazard_hit_rate", "satisfaction_rate", "return_mean"]
+    bar_vals = [_vals(k) for k in bar_keys]
+    fig, ax = plt.subplots(figsize=(max(8, len(labels) * 0.7), 4))
+    offsets = np.linspace(-1.5 * width, 1.5 * width, len(bar_keys))
+    for offset, k, v in zip(offsets, bar_keys, bar_vals):
+        ax.bar(x + offset, np.nan_to_num(v, nan=0.0), width=width, label=k)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=20, ha="right", fontsize=8)
+    ax.axhline(0, color="black", linewidth=0.5)
+    ax.legend(loc="best", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(os.path.join(plots_dir, "metrics_bar.png"), dpi=120)
+    plt.close(fig)
 
-    plt.figure(figsize=(8, 4))
-    for i, (k, v) in enumerate(zip(keys, vals)):
-        plt.bar(x + (i - 1.5) * width, np.nan_to_num(v, nan=0.0), width=width, label=k)
-    plt.xticks(x, labels, rotation=15, ha="right")
-    plt.legend(loc="best", fontsize=8)
-    plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, "metrics_bar.png"))
-    plt.close()
+    # ── 2. Multi-metric trend (goal / hazard / return vs alpha) ──────────────
+    goal_r = _vals("goal_rate")
+    hazard_r = _vals("hazard_hit_rate")
+    sat_r = _vals("satisfaction_rate")
+    ret_r = _vals("return_mean")
+    xs = range(len(labels))
+    fig, ax1 = plt.subplots(figsize=(max(7, len(labels) * 0.6), 4))
+    ax2 = ax1.twinx()
+    ax1.plot(xs, np.nan_to_num(goal_r), marker="o", color="green", label="goal_rate")
+    ax1.plot(xs, np.nan_to_num(hazard_r), marker="x", color="red", label="bomb_hit_rate")
+    ax1.plot(xs, np.nan_to_num(sat_r), marker="s", color="blue", linestyle="--", label="satisfaction_rate")
+    ax2.plot(xs, np.nan_to_num(ret_r), marker="^", color="orange", label="return_mean")
+    ax1.set_xticks(list(xs))
+    ax1.set_xticklabels(labels, rotation=20, ha="right", fontsize=8)
+    ax1.set_ylim(-0.05, 1.05)
+    ax1.set_ylabel("rate (0–1)")
+    ax2.set_ylabel("return")
+    lines1, leg1 = ax1.get_legend_handles_labels()
+    lines2, leg2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, leg1 + leg2, loc="best", fontsize=7)
+    fig.tight_layout()
+    fig.savefig(os.path.join(plots_dir, "satisfaction_trend.png"), dpi=120)
+    plt.close(fig)
 
-    sats = _vals("satisfaction_rate")
-    plt.figure(figsize=(6, 4))
-    plt.plot(range(len(labels)), np.nan_to_num(sats, nan=0.0), marker="o")
-    plt.xticks(range(len(labels)), labels, rotation=15, ha="right")
-    plt.ylim(-0.05, 1.05)
-    plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, "satisfaction_trend.png"))
-    plt.close()
-
-    rets = _vals("return_mean")
-    plt.figure(figsize=(5, 4))
-    plt.scatter(np.nan_to_num(rets, nan=0.0), np.nan_to_num(sats, nan=0.0))
+    # ── 3. Return vs satisfaction scatter ────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(5, 4))
+    ax.scatter(np.nan_to_num(ret_r), np.nan_to_num(sat_r))
     for i, label in enumerate(labels):
-        plt.annotate(label, (np.nan_to_num(rets[i], nan=0.0), np.nan_to_num(sats[i], nan=0.0)))
-    plt.xlabel("return_mean")
-    plt.ylabel("satisfaction_rate")
-    plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, "return_vs_satisfaction.png"))
-    plt.close()
+        ax.annotate(label, (np.nan_to_num(ret_r[i]), np.nan_to_num(sat_r[i])), fontsize=7)
+    ax.set_xlabel("return_mean")
+    ax.set_ylabel("satisfaction_rate")
+    fig.tight_layout()
+    fig.savefig(os.path.join(plots_dir, "return_vs_satisfaction.png"), dpi=120)
+    plt.close(fig)
+
+    # ── 4. Episode outcome stacked bar (goal / bomb / timeout) ───────────────
+    if rollout:
+        goals_frac, bombs_frac, timeout_frac = [], [], []
+        valid_labels = []
+        for label in labels:
+            rs = rollout.get(label)
+            if rs is None:
+                continue
+            g = np.asarray(rs.get("episode_goal_hits", []), dtype=float)
+            h = np.asarray(rs.get("episode_hazard_hits", []), dtype=float)
+            n = max(len(g), 1)
+            goal_ep = float(np.mean(g > 0)) if len(g) else 0.0
+            bomb_ep = float(np.mean(h > 0)) if len(h) else 0.0
+            to_ep = max(0.0, 1.0 - goal_ep - bomb_ep)
+            goals_frac.append(goal_ep)
+            bombs_frac.append(bomb_ep)
+            timeout_frac.append(to_ep)
+            valid_labels.append(label)
+        if valid_labels:
+            x2 = np.arange(len(valid_labels))
+            fig, ax = plt.subplots(figsize=(max(7, len(valid_labels) * 0.65), 4))
+            ax.bar(x2, goals_frac, label="goal reached", color="green")
+            ax.bar(x2, bombs_frac, bottom=goals_frac, label="bomb hit", color="red")
+            ax.bar(x2, timeout_frac, bottom=np.add(goals_frac, bombs_frac), label="timeout", color="gray")
+            ax.set_xticks(x2)
+            ax.set_xticklabels(valid_labels, rotation=20, ha="right", fontsize=8)
+            ax.set_ylim(0, 1.05)
+            ax.set_ylabel("episode fraction")
+            ax.legend(loc="upper right", fontsize=8)
+            fig.tight_layout()
+            fig.savefig(os.path.join(plots_dir, "outcome_breakdown.png"), dpi=120)
+            plt.close(fig)
+
+    # ── 5. Return distribution overlay ───────────────────────────────────────
+    if rollout:
+        plot_labels = [l for l in labels if l in rollout and rollout[l].get("episode_returns")]
+        if plot_labels:
+            fig, ax = plt.subplots(figsize=(7, 4))
+            cmap = plt.cm.get_cmap("tab10", len(plot_labels))
+            for idx, label in enumerate(plot_labels):
+                ep_rets = np.asarray(rollout[label]["episode_returns"], dtype=float)
+                ax.hist(ep_rets, bins=30, alpha=0.45, label=label, color=cmap(idx), density=True)
+            ax.set_xlabel("episode return")
+            ax.set_ylabel("density")
+            ax.legend(loc="best", fontsize=7, ncol=2)
+            fig.tight_layout()
+            fig.savefig(os.path.join(plots_dir, "return_hist.png"), dpi=120)
+            plt.close(fig)
+
+    # ── 6. Episode length distribution ───────────────────────────────────────
+    if rollout:
+        plot_labels = [l for l in labels if l in rollout and rollout[l].get("episode_lengths")]
+        if plot_labels:
+            fig, ax = plt.subplots(figsize=(7, 4))
+            cmap = plt.cm.get_cmap("tab10", len(plot_labels))
+            for idx, label in enumerate(plot_labels):
+                ep_lens = np.asarray(rollout[label]["episode_lengths"], dtype=float)
+                ax.hist(ep_lens, bins=30, alpha=0.45, label=label, color=cmap(idx), density=True)
+            ax.set_xlabel("episode length (steps)")
+            ax.set_ylabel("density")
+            ax.legend(loc="best", fontsize=7, ncol=2)
+            fig.tight_layout()
+            fig.savefig(os.path.join(plots_dir, "episode_length_hist.png"), dpi=120)
+            plt.close(fig)
+
+    # ── 7. Return box plot per alpha ──────────────────────────────────────────
+    if rollout:
+        box_labels = [l for l in labels if l in rollout and rollout[l].get("episode_returns")]
+        if box_labels:
+            data = [np.asarray(rollout[l]["episode_returns"], dtype=float) for l in box_labels]
+            fig, ax = plt.subplots(figsize=(max(7, len(box_labels) * 0.65), 4))
+            ax.boxplot(data, labels=box_labels, patch_artist=True, notch=False)
+            ax.set_xticklabels(box_labels, rotation=20, ha="right", fontsize=8)
+            ax.set_ylabel("episode return")
+            ax.axhline(0, color="green", linewidth=0.8, linestyle="--", label="break-even")
+            ax.legend(fontsize=8)
+            fig.tight_layout()
+            fig.savefig(os.path.join(plots_dir, "return_boxplot.png"), dpi=120)
+            plt.close(fig)
 
 
 def _run_subprocess(
