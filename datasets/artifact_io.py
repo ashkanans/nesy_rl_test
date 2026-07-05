@@ -96,6 +96,7 @@ def _save_artifact_payload(args, dataset, artifact_tag: str = "dataset_snapshot"
     episodes_tokens = list(getattr(dataset, "episodes_tokens", []) or [])
     episode_rewards = getattr(dataset, "episode_rewards", None)
     episode_policy_labels = getattr(dataset, "episode_policy_labels", None)
+    episode_transitions = getattr(dataset, "episode_transitions", None)
     indices = getattr(dataset, "indices", None)
 
     payload = {
@@ -105,6 +106,10 @@ def _save_artifact_payload(args, dataset, artifact_tag: str = "dataset_snapshot"
         payload["episode_rewards"] = _to_object_array(list(episode_rewards))
     if episode_policy_labels is not None:
         payload["episode_policy_labels"] = np.asarray(list(episode_policy_labels), dtype=object)
+    if episode_transitions is not None:
+        # Explicit (s, a, s_next, done) tuples per episode. Independent of token
+        # serialization; preserves terminal next-states dropped from token rows.
+        payload["episode_transitions"] = _to_object_array(list(episode_transitions))
     if indices is not None:
         payload["indices"] = np.asarray(list(indices), dtype=np.int64)
 
@@ -310,6 +315,7 @@ class LoadedSequenceDataset(Dataset):
         meta: dict,
         sequence_length: int,
         target_shift: str,
+        episode_transitions: list[np.ndarray] | None = None,
     ):
         self.env_name = str(env_name)
         self.dataset_class = str(dataset_class)
@@ -323,6 +329,11 @@ class LoadedSequenceDataset(Dataset):
         )
         self.episode_policy_labels = (
             [str(x) for x in episode_policy_labels] if episode_policy_labels is not None else None
+        )
+        self.episode_transitions = (
+            [np.asarray(tr, dtype=np.int64).reshape(-1, 4) for tr in episode_transitions]
+            if episode_transitions is not None
+            else None
         )
         self.dataset_config = dict(dataset_config)
         self.meta = dict(meta)
@@ -439,6 +450,11 @@ def load_sequence_dataset_artifact(
             if "episode_policy_labels" in npz
             else None
         )
+        episode_transitions = (
+            [np.asarray(tr, dtype=np.int64).reshape(-1, 4) for tr in npz["episode_transitions"]]
+            if "episode_transitions" in npz
+            else None
+        )
 
     if env_name == "cb":
         env = _build_cb_env(dataset_config)
@@ -475,5 +491,6 @@ def load_sequence_dataset_artifact(
         meta=meta,
         sequence_length=int(sequence_length),
         target_shift=target_shift,
+        episode_transitions=episode_transitions,
     )
     return dataset

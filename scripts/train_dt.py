@@ -16,12 +16,14 @@ if str(REPO_ROOT) not in sys.path:
 
 from models.dt_model import DecisionTransformerDiscrete
 from planning.dynamics_runtime import (
+    absorb_terminal_states,
     build_dataset_tabular_dynamics,
     build_dynamics_dataset_identifiers,
     fit_neural_dynamics_model,
     load_neural_dynamics_checkpoint,
     neural_dynamics_to_transition_tensor,
     save_neural_dynamics_checkpoint,
+    terminal_states_from_dataset,
 )
 from planning.dt_runtime import (
     DTRolloutConfig,
@@ -416,6 +418,13 @@ def train(args):
             dynamics_stats.setdefault("dataset_identifiers", dataset_ids)
         else:
             raise ValueError(f"Unsupported DT dynamics backend '{args.dt_logic_dynamics_backend}'")
+
+        # Make terminal env-states (bomb/goal) absorbing so the product MDP reflects
+        # episode termination. No-op for legacy artifacts without explicit transitions.
+        if transition_probs_t is not None:
+            terminal_states = terminal_states_from_dataset(base_dataset)
+            if len(terminal_states) > 0:
+                transition_probs_t = absorb_terminal_states(transition_probs_t, terminal_states)
 
         if dt_logic_loss_type_effective == "dfa_product_value":
             if dfa_adapter is None or dfa_deep is None or transition_probs_t is None:

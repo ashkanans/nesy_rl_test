@@ -217,3 +217,68 @@ def test_train_dt_with_logic_smoke_writes_logic_metrics(tmp_path):
     assert payload["model_type"] == "dt"
     assert "logic_loss" in payload
     assert payload["logic_loss"] is not None
+
+
+def test_explicit_transitions_capture_terminal_nextstates():
+    """Proposal-2: explicit (s,a,s_next,done) tuples must include terminal cells
+    (bombs/goals) that pre-semantics token rows drop, and must agree with token
+    reconstruction on the non-terminal transitions."""
+    from datasets.cb_dataset import CBSequenceDataset
+    from planning.dynamics_runtime import (
+        build_offline_transition_examples,
+        terminal_states_from_dataset,
+    )
+
+    ds = CBSequenceDataset(
+        num_episodes=200,
+        max_steps=40,
+        sequence_length=80,
+        seed=0,
+        policy_mix_spec="random:1.0",
+        state_semantics="pre",
+    )
+    env = ds.env
+    bombs = {int(env._pos_to_state(b)) for b in env.bomb_positions}
+    goals = {int(env._pos_to_state(g)) for g in env.goal_positions}
+
+    # Dataset must now carry explicit transitions.
+    assert getattr(ds, "episode_transitions", None) is not None
+    ex = build_offline_transition_examples(ds)
+    assert ex["stats"]["transition_source"] == "explicit_transitions"
+    ns = set(int(x) for x in ex["next_states"].tolist())
+
+    # Terminal cells now appear as next-states (they never do via token rows in pre).
+    terminals = set(int(x) for x in terminal_states_from_dataset(ds).tolist())
+    assert terminals & (bombs | goals), "no terminal bomb/goal captured"
+    assert ns & bombs, "bomb cells still absent from transitions"
+
+    # Every explicit (s,a) pair that also appears via token reconstruction must
+    # agree on the deterministic next-state (CB is deterministic).
+    class _NoExplicit:
+        def __init__(self, base):
+            self.__dict__.update(base.__dict__)
+            self.episode_transitions = None
+
+    recon = build_offline_transition_examples(_NoExplicit(ds))
+    assert recon["stats"]["transition_source"] == "token_reconstruction"
+    exp_map = {}
+    for s, a, sn in zip(ex["states"].tolist(), ex["actions"].tolist(), ex["next_states"].tolist()):
+        exp_map[(int(s), int(a))] = int(sn)
+    mism = 0
+    for s, a, sn in zip(recon["states"].tolist(), recon["actions"].tolist(), recon["next_states"].tolist()):
+        if (int(s), int(a)) in exp_map and exp_map[(int(s), int(a))] != int(sn):
+            mism += 1
+    assert mism == 0, f"{mism} explicit/reconstructed next-state disagreements"
+
+
+def test_absorb_terminal_states_selfloops():
+    from planning.dynamics_runtime import absorb_terminal_states
+
+    probs = torch.zeros(2, 4, 4)
+    probs[:, :, 1] = 1.0  # everything -> state 1
+    out = absorb_terminal_states(probs, [1, 3])
+    # terminal states self-loop
+    assert torch.allclose(out[0, 1], torch.tensor([0.0, 1.0, 0.0, 0.0]))
+    assert torch.allclose(out[1, 3], torch.tensor([0.0, 0.0, 0.0, 1.0]))
+    # non-terminal unchanged
+    assert torch.allclose(out[0, 0], torch.tensor([0.0, 1.0, 0.0, 0.0]))

@@ -117,12 +117,14 @@ class CBSequenceDataset(Dataset):
         episodes_tokens = []
         episode_rewards = []
         episode_policy_labels = []
+        episode_transitions = []
 
         for _ in range(num_episodes):
             s, _ = self.env.reset()
             states = []
             actions = []
             rewards = []
+            transitions = []
             sampled_probs = _sample_policy_probs(
                 rng=rng,
                 names=self.policy_mix_names,
@@ -148,11 +150,18 @@ class CBSequenceDataset(Dataset):
                     per_goal_safe_policies=self.per_goal_safe_policies,
                     per_goal_any_policies=self.per_goal_any_policies,
                 )
-                ns, r, done, _ = self.env.step(a)
+                ns, r, done, info = self.env.step(a)
                 token_state = int(pre_s if self.state_semantics == "pre" else ns)
                 states.append(token_state)
                 actions.append(a)
                 rewards.append(r)
+                # Explicit ground-truth transition (independent of token semantics).
+                # Captures the terminal next-state that token rows elide, so offline
+                # dynamics can learn transitions into bomb/goal cells. `done` here is
+                # TRUE TERMINATION only (goal/bomb); max-steps truncation is excluded
+                # so truncation cells are not wrongly absorbed into self-loops.
+                is_terminal = int(isinstance(info, dict) and info.get("terminal_type") is not None)
+                transitions.append((int(pre_s), int(a), int(ns), is_terminal))
                 s = ns
                 path_step += 1
                 if done:
@@ -187,6 +196,9 @@ class CBSequenceDataset(Dataset):
             episodes_tokens.append(tokens)
             episode_rewards.append(np.asarray(rewards, dtype=np.float32))
             episode_policy_labels.append(policy_name)
+            episode_transitions.append(
+                np.asarray(transitions, dtype=np.int64).reshape(-1, 4)
+            )
 
         indices = []
         self.rows_per_seg = max(1, sequence_length // self.token_schema.width)
@@ -207,6 +219,7 @@ class CBSequenceDataset(Dataset):
         self.episodes_tokens = episodes_tokens
         self.episode_rewards = episode_rewards
         self.episode_policy_labels = episode_policy_labels
+        self.episode_transitions = episode_transitions
         self.indices = indices
 
         self.observation_dim = 1

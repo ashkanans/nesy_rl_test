@@ -52,46 +52,67 @@ def build_offline_transition_examples(base_dataset) -> dict[str, Any]:
     states: list[int] = []
     actions: list[int] = []
     next_states: list[int] = []
+    terminal_ids: set[int] = set()
     skipped_rows = 0
     skipped_episodes = 0
 
-    for ep in getattr(base_dataset, "episodes_tokens", []) or []:
-        rows = np.asarray(ep)
-        if rows.ndim != 2 or rows.shape[0] < 3:
-            skipped_episodes += 1
-            continue
+    explicit = getattr(base_dataset, "episode_transitions", None)
+    source = "explicit_transitions" if explicit else "token_reconstruction"
 
-        core_rows = rows[:-1]
-        if core_rows.shape[0] < 2:
-            skipped_episodes += 1
-            continue
-
-        state_semantics = str(getattr(base_dataset, "state_semantics", "pre"))
-        for t in range(core_rows.shape[0] - 1):
-            cur = core_rows[t]
-            nxt = core_rows[t + 1]
-            if max(state_idx, action_idx) >= cur.shape[0] or state_idx >= nxt.shape[0]:
-                skipped_rows += 1
-                continue
-            try:
-                s = int(cur[state_idx])
-                # With post-state serialization, row[t].state is the state reached
-                # after row[t].action. The action that leaves this state is stored
-                # on the next row.
-                action_row = nxt if state_semantics == "post" else cur
-                a = int(action_row[action_idx])
-                s_next = int(nxt[state_idx])
-            except Exception:
-                skipped_rows += 1
+    if explicit:
+        # Preferred path: ground-truth (s, a, s_next, done) tuples captured during
+        # materialization. Includes transitions INTO terminal cells (bomb/goal) that
+        # token rows drop, and is independent of pre/post token serialization.
+        for tr in explicit:
+            arr = np.asarray(tr, dtype=np.int64).reshape(-1, 4)
+            for s, a, s_next, done in arr:
+                s, a, s_next, done = int(s), int(a), int(s_next), int(done)
+                if not (0 <= s < num_states and 0 <= s_next < num_states and 0 <= a < num_actions):
+                    skipped_rows += 1
+                    continue
+                states.append(s)
+                actions.append(a)
+                next_states.append(s_next)
+                if done:
+                    terminal_ids.add(s_next)
+    else:
+        for ep in getattr(base_dataset, "episodes_tokens", []) or []:
+            rows = np.asarray(ep)
+            if rows.ndim != 2 or rows.shape[0] < 3:
+                skipped_episodes += 1
                 continue
 
-            if not (0 <= s < num_states and 0 <= s_next < num_states and 0 <= a < num_actions):
-                skipped_rows += 1
+            core_rows = rows[:-1]
+            if core_rows.shape[0] < 2:
+                skipped_episodes += 1
                 continue
 
-            states.append(s)
-            actions.append(a)
-            next_states.append(s_next)
+            state_semantics = str(getattr(base_dataset, "state_semantics", "pre"))
+            for t in range(core_rows.shape[0] - 1):
+                cur = core_rows[t]
+                nxt = core_rows[t + 1]
+                if max(state_idx, action_idx) >= cur.shape[0] or state_idx >= nxt.shape[0]:
+                    skipped_rows += 1
+                    continue
+                try:
+                    s = int(cur[state_idx])
+                    # With post-state serialization, row[t].state is the state reached
+                    # after row[t].action. The action that leaves this state is stored
+                    # on the next row.
+                    action_row = nxt if state_semantics == "post" else cur
+                    a = int(action_row[action_idx])
+                    s_next = int(nxt[state_idx])
+                except Exception:
+                    skipped_rows += 1
+                    continue
+
+                if not (0 <= s < num_states and 0 <= s_next < num_states and 0 <= a < num_actions):
+                    skipped_rows += 1
+                    continue
+
+                states.append(s)
+                actions.append(a)
+                next_states.append(s_next)
 
     states_arr = np.asarray(states, dtype=np.int64)
     actions_arr = np.asarray(actions, dtype=np.int64)
@@ -125,8 +146,47 @@ def build_offline_transition_examples(base_dataset) -> dict[str, Any]:
             "skipped_episodes": int(skipped_episodes),
             "state_semantics": str(getattr(base_dataset, "state_semantics", "pre")),
             "state_action_counts": state_action_counts.tolist(),
+            "transition_source": source,
+            "terminal_states": sorted(int(x) for x in terminal_ids),
         },
+        "terminal_states": np.asarray(sorted(terminal_ids), dtype=np.int64),
     }
+
+
+def terminal_states_from_dataset(base_dataset) -> np.ndarray:
+    """Env states reached with done=True, from explicit transitions when present."""
+    explicit = getattr(base_dataset, "episode_transitions", None)
+    if not explicit:
+        return np.zeros(0, dtype=np.int64)
+    terminal_ids: set[int] = set()
+    for tr in explicit:
+        arr = np.asarray(tr, dtype=np.int64).reshape(-1, 4)
+        for _, _, s_next, done in arr:
+            if int(done):
+                terminal_ids.add(int(s_next))
+    return np.asarray(sorted(terminal_ids), dtype=np.int64)
+
+
+def absorb_terminal_states(transition_probs, terminal_states) -> "Any":
+    """Make terminal env-states absorbing (self-loop) in a [A, S, S] tensor/array.
+
+    A terminal state ends the episode, so it has no valid outgoing transition; a
+    self-loop yields the correct steps-to-acceptance semantics (infinite/unreachable
+    for any non-accepting DFA state) and prevents use of hallucinated dynamics for
+    terminal cells that never appear as transition sources.
+    """
+    if terminal_states is None or len(terminal_states) == 0:
+        return transition_probs
+    is_torch = isinstance(transition_probs, torch.Tensor)
+    probs = transition_probs
+    num_actions, num_states, _ = probs.shape
+    for s in terminal_states:
+        s = int(s)
+        if not (0 <= s < num_states):
+            continue
+        probs[:, s, :] = 0.0
+        probs[:, s, s] = 1.0
+    return probs
 
 
 def build_dataset_tabular_dynamics(base_dataset) -> tuple[np.ndarray, dict[str, Any]]:
