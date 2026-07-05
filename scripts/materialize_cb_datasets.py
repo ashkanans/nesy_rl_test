@@ -19,6 +19,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from datasets.artifact_io import save_sequence_dataset_artifact
 from datasets.cb_dataset import CBSequenceDataset
+from planning.dynamics_runtime import (
+    build_dynamics_dataset_identifiers,
+    fit_neural_dynamics_model,
+    save_neural_dynamics_checkpoint,
+)
 from specs.cb_specs import SPECS as CB_SPECS
 from train_cb import build_adapter_and_dfa, resolve_formulas
 
@@ -135,6 +140,10 @@ def _analysis_summary_path(base_dir: str, stem: str) -> str:
     return os.path.join(_analysis_root(base_dir, stem), "dataset_analysis", "summary.json")
 
 
+def _dynamics_checkpoint_path(base_dir: str, stem: str) -> str:
+    return os.path.join(_artifact_dir(base_dir, stem), "dynamics", "neural_dataset.pt")
+
+
 def parse_args(argv: list[str] | None = None):
     p = argparse.ArgumentParser(
         description="Materialize reusable ColourBomb dataset artifacts and analysis reports."
@@ -238,6 +247,21 @@ def parse_args(argv: list[str] | None = None):
         default=None,
         help="Maximum number of episodes to score per spec in the report. Default: all.",
     )
+    p.add_argument(
+        "--fit_neural_dynamics",
+        action="store_true",
+        help="Train one neural dynamics model per materialized dataset artifact.",
+    )
+    p.add_argument("--overwrite_dynamics", action="store_true")
+    p.add_argument("--dynamics_device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
+    p.add_argument("--dynamics_epochs", type=int, default=20)
+    p.add_argument("--dynamics_batch_size", type=int, default=256)
+    p.add_argument("--dynamics_lr", type=float, default=1e-3)
+    p.add_argument("--dynamics_hidden_dim", type=int, default=128)
+    p.add_argument("--dynamics_layers", type=int, default=2)
+    p.add_argument("--dynamics_weight_decay", type=float, default=1e-4)
+    p.add_argument("--dynamics_val_fraction", type=float, default=0.1)
+    p.add_argument("--dynamics_temperature", type=float, default=1.0)
     return p.parse_args(argv)
 
 
@@ -542,6 +566,74 @@ def _write_base_plots(dataset, out_dir: str, summary: dict) -> None:
         plt.close()
 
 
+def _cb_deterministic_next_state(env, state: int, action: int) -> int:
+    r, c = env._state_to_pos(int(state))
+    dr, dc = env.ACTIONS[int(action)]
+    nr, nc = r + dr, c + dc
+    if 0 <= nr < int(env.n_rows) and 0 <= nc < int(env.n_cols):
+        if env.grid[nr][nc] != "#":
+            r, c = nr, nc
+    return int(env._pos_to_state((r, c)))
+
+
+def _spec_scoring_episode_tokens(dataset) -> tuple[list[np.ndarray], str, str | None]:
+    """Return episode tokens in the state semantics needed for CB spec scoring."""
+    episodes = [np.asarray(ep, dtype=np.int64) for ep in (getattr(dataset, "episodes_tokens", []) or [])]
+    state_semantics = str(getattr(dataset, "state_semantics", "post") or "post")
+    if state_semantics != "pre":
+        return [ep.copy() for ep in episodes], state_semantics, None
+
+    env = getattr(dataset, "env", None)
+    if env is None:
+        raise ValueError("Cannot reconstruct post-state traces for pre-semantics CB data without env.")
+    env_cfg = getattr(env, "cfg", None)
+    if bool(getattr(env_cfg, "stochastic", False)):
+        raise ValueError(
+            "Cannot exactly reconstruct post-state traces from pre-semantics stochastic CB data. "
+            "Regenerate the artifact with post semantics or store next states explicitly."
+        )
+
+    schema = getattr(dataset, "token_schema", None)
+    state_idx = int(schema.field_index("state")) if schema is not None else 0
+    action_idx = int(schema.field_index("action")) if schema is not None else 1
+
+    reconstructed: list[np.ndarray] = []
+    for ep in episodes:
+        rows = ep.copy()
+        for row in rows[:-1]:
+            row[state_idx] = _cb_deterministic_next_state(
+                env=env,
+                state=int(row[state_idx]),
+                action=int(row[action_idx]),
+            )
+        reconstructed.append(rows)
+
+    note = (
+        "pre artifact scored on reconstructed post-action states, because CB terminal "
+        "goal/bomb states are reached after the stored pre-state action."
+    )
+    return reconstructed, "post_reconstructed_from_pre", note
+
+
+def _segment_inputs_from_episode_tokens(dataset, episodes: list[np.ndarray], segment_limit: int):
+    limit = max(0, min(int(segment_limit), len(getattr(dataset, "indices", []))))
+    joined_dim = int(getattr(dataset, "joined_dim", episodes[0].shape[1] if episodes else 4))
+    required_rows = int(getattr(dataset, "required_rows", 1))
+    target_shift = str(getattr(dataset, "target_shift", "token"))
+
+    inputs = []
+    for ep_idx, start_row in list(getattr(dataset, "indices", []))[:limit]:
+        rows = episodes[int(ep_idx)]
+        seg_rows = rows[int(start_row) : int(start_row) + required_rows]
+        flat = seg_rows.reshape(-1)
+        if target_shift == "transition":
+            x = flat[:-joined_dim]
+        else:
+            x = flat[:-1]
+        inputs.append(torch.from_numpy(x.astype(np.int64)))
+    return inputs
+
+
 def _score_dfa_list(
     dataset,
     adapter,
@@ -792,10 +884,22 @@ def _analyze_dataset_artifact(
         "analysis_sequence_length": int(args.sequence_length),
         "analysis_segment_limit": int(args.analysis_segment_limit),
         "analysis_segment_mode": "all" if int(args.analysis_segment_limit) < 0 else "sampled",
-        "policy_mix_spec": str(getattr(dataset, "cb_policy_mix_spec", "")),
-        "policy_mix_sampling": str(getattr(dataset, "cb_policy_mix_sampling", "")),
-        "policy_mix_normal_spec": getattr(dataset, "cb_policy_mix_normal_spec", None),
-        "policy_mix_normal_mean_mode": str(getattr(dataset, "cb_policy_mix_normal_mean_mode", "")),
+        "policy_mix_spec": str(
+            getattr(dataset, "policy_mix_spec", getattr(dataset, "cb_policy_mix_spec", ""))
+        ),
+        "policy_mix_sampling": str(
+            getattr(dataset, "policy_mix_sampling", getattr(dataset, "cb_policy_mix_sampling", ""))
+        ),
+        "policy_mix_normal_spec": getattr(
+            dataset, "policy_mix_normal_spec", getattr(dataset, "cb_policy_mix_normal_spec", None)
+        ),
+        "policy_mix_normal_mean_mode": str(
+            getattr(
+                dataset,
+                "policy_mix_normal_mean_mode",
+                getattr(dataset, "cb_policy_mix_normal_mean_mode", ""),
+            )
+        ),
         "state_semantics": str(getattr(dataset, "state_semantics", "")),
         "seed": int(seed),
         "analysis_spec_count": int(len(CB_SPECS)),
@@ -803,12 +907,17 @@ def _analyze_dataset_artifact(
     summary.update(_dataset_overview(dataset))
     _write_base_plots(dataset, out_dir, summary)
 
+    scoring_episodes, scoring_state_semantics, scoring_note = _spec_scoring_episode_tokens(dataset)
+    summary["spec_scoring_state_semantics"] = scoring_state_semantics
+    if scoring_note is not None:
+        summary["spec_scoring_note"] = scoring_note
+
     raw_segment_limit = int(args.analysis_segment_limit)
     exact_segments = raw_segment_limit < 0
     segment_limit = len(dataset) if exact_segments else min(raw_segment_limit, len(dataset))
-    segment_inputs = [dataset[i][0].detach().cpu() for i in range(segment_limit)]
+    segment_inputs = _segment_inputs_from_episode_tokens(dataset, scoring_episodes, segment_limit)
     episode_limit = args.analysis_episode_limit
-    episodes = list(getattr(dataset, "episodes_tokens", []) or [])
+    episodes = scoring_episodes
     if episode_limit is not None:
         episodes = episodes[: int(episode_limit)]
     episode_inputs = [
@@ -951,6 +1060,73 @@ def _analyze_dataset_artifact(
     return summary
 
 
+def _resolve_dynamics_device(raw: str) -> torch.device:
+    if raw == "cpu":
+        return torch.device("cpu")
+    if raw == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("--dynamics_device cuda requested but CUDA is not available.")
+        return torch.device("cuda:0")
+    return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+
+def _fit_dynamics_for_artifact(*, args, dataset, base_dir: str, stem: str, seed: int, mix_spec: str, semantics: str) -> dict:
+    ckpt_path = _dynamics_checkpoint_path(base_dir, stem)
+    log_path = os.path.join(os.path.dirname(ckpt_path), "train_log.csv")
+    summary_path = os.path.join(os.path.dirname(ckpt_path), "summary.json")
+    if os.path.exists(ckpt_path) and not bool(args.overwrite_dynamics):
+        return {
+            "status": "skipped_existing",
+            "checkpoint_path": ckpt_path,
+            "summary_path": summary_path if os.path.exists(summary_path) else None,
+        }
+
+    device = _resolve_dynamics_device(str(args.dynamics_device))
+    dyn_args = SimpleNamespace(
+        env="cb",
+        seed=int(seed),
+        cb_policy_mix_spec=str(mix_spec),
+        cb_policy_mix_sampling=str(args.policy_mix_sampling),
+        cb_state_semantics=str(semantics),
+        num_episodes=int(args.num_episodes),
+        max_steps=int(args.max_steps),
+    )
+    model, stats = fit_neural_dynamics_model(
+        base_dataset=dataset,
+        hidden_dim=int(args.dynamics_hidden_dim),
+        num_layers=int(args.dynamics_layers),
+        epochs=int(args.dynamics_epochs),
+        batch_size=int(args.dynamics_batch_size),
+        lr=float(args.dynamics_lr),
+        weight_decay=float(args.dynamics_weight_decay),
+        val_fraction=float(args.dynamics_val_fraction),
+        device=device,
+        seed=int(seed),
+        temperature=float(args.dynamics_temperature),
+        freeze_after_fit=True,
+        log_path=log_path,
+    )
+    dataset_ids = build_dynamics_dataset_identifiers(dataset, args=dyn_args)
+    stats["dataset_identifiers"] = dataset_ids
+    stats["checkpoint_path"] = ckpt_path
+    save_neural_dynamics_checkpoint(
+        path=ckpt_path,
+        model=model,
+        stats=stats,
+        dataset_identifiers=dataset_ids,
+    )
+    summary = {
+        "status": "trained",
+        "checkpoint_path": ckpt_path,
+        "training_log_path": log_path,
+        "device": str(device),
+        "stats": stats,
+    }
+    _write_json(summary_path, summary)
+    print(f"[dynamics] wrote {ckpt_path}")
+    return summary
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     base_dir = os.path.abspath(args.dataset_artifact_dir)
@@ -963,6 +1139,7 @@ def main(argv: list[str] | None = None) -> int:
     created: list[dict] = []
     skipped: list[dict] = []
     analysis_skipped: list[dict] = []
+    dynamics_reports: list[dict] = []
 
     artifact_iter = tqdm(
         [
@@ -980,12 +1157,19 @@ def main(argv: list[str] | None = None) -> int:
         stem = _artifact_stem(args.dataset_artifact_name, semantics, mix_spec, seed)
         npz_path, meta_path = _artifact_paths(base_dir, stem)
         analysis_summary_path = _analysis_summary_path(base_dir, stem)
+        dynamics_path = _dynamics_checkpoint_path(base_dir, stem)
         artifact_done = os.path.exists(npz_path) and os.path.exists(meta_path)
         analysis_done = os.path.exists(analysis_summary_path)
+        dynamics_done = os.path.exists(dynamics_path)
 
         artifact_iter.set_postfix_str(f"{semantics} | seed={seed} | {_slug(mix_spec)}")
 
-        if args.skip_existing and artifact_done and (not args.analyze_all_specs or analysis_done):
+        if (
+            args.skip_existing
+            and artifact_done
+            and (not args.analyze_all_specs or analysis_done)
+            and (not args.fit_neural_dynamics or dynamics_done)
+        ):
             skipped.append(
                 {
                     "seed": int(seed),
@@ -994,6 +1178,7 @@ def main(argv: list[str] | None = None) -> int:
                     "npz_path": npz_path,
                     "meta_path": meta_path,
                     "analysis_summary_path": analysis_summary_path if args.analyze_all_specs else None,
+                    "dynamics_checkpoint_path": dynamics_path if args.fit_neural_dynamics else None,
                 }
             )
             continue
@@ -1059,6 +1244,26 @@ def main(argv: list[str] | None = None) -> int:
                     }
                 )
 
+        if args.fit_neural_dynamics:
+            dyn_report = _fit_dynamics_for_artifact(
+                args=args,
+                dataset=dataset,
+                base_dir=base_dir,
+                stem=stem,
+                seed=int(seed),
+                mix_spec=mix_spec,
+                semantics=semantics,
+            )
+            dyn_report.update(
+                {
+                    "seed": int(seed),
+                    "state_semantics": semantics,
+                    "policy_mix_spec": mix_spec,
+                    "artifact_stem": stem,
+                }
+            )
+            dynamics_reports.append(dyn_report)
+
     manifest = {
         "output_root": base_dir,
         "dataset_artifact_name": args.dataset_artifact_name,
@@ -1082,13 +1287,19 @@ def main(argv: list[str] | None = None) -> int:
         "analysis_segment_limit": int(args.analysis_segment_limit),
         "analysis_segment_mode": "all" if int(args.analysis_segment_limit) < 0 else "sampled",
         "analysis_episode_limit": args.analysis_episode_limit,
+        "fit_neural_dynamics": bool(args.fit_neural_dynamics),
+        "overwrite_dynamics": bool(args.overwrite_dynamics),
+        "dynamics_device": str(args.dynamics_device),
+        "dynamics_epochs": int(args.dynamics_epochs),
         "jobs_total": int(total_jobs),
         "created_count": int(len(created)),
         "skipped_count": int(len(skipped)),
         "analysis_skipped_count": int(len(analysis_skipped)),
+        "dynamics_report_count": int(len(dynamics_reports)),
         "created_preview": created[:20],
         "skipped_preview": skipped[:20],
         "analysis_skipped_preview": analysis_skipped[:20],
+        "dynamics_preview": dynamics_reports[:20],
     }
     _write_json(os.path.join(base_dir, "colorbomb_dataset_manifest.json"), manifest)
 

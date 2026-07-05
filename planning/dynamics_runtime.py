@@ -102,6 +102,9 @@ def build_offline_transition_examples(base_dataset) -> dict[str, Any]:
         if states_arr.size > 0
         else np.zeros((0, 2), dtype=np.int64)
     )
+    state_action_counts = np.zeros((num_actions, num_states), dtype=np.float32)
+    for s, a in zip(states_arr, actions_arr):
+        state_action_counts[int(a), int(s)] += 1.0
     possible_pairs = int(num_states * num_actions)
     coverage_ratio = float(len(unique_pairs) / possible_pairs) if possible_pairs > 0 else 0.0
 
@@ -121,6 +124,7 @@ def build_offline_transition_examples(base_dataset) -> dict[str, Any]:
             "skipped_rows": int(skipped_rows),
             "skipped_episodes": int(skipped_episodes),
             "state_semantics": str(getattr(base_dataset, "state_semantics", "pre")),
+            "state_action_counts": state_action_counts.tolist(),
         },
     }
 

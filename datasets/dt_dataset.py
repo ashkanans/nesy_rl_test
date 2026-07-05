@@ -39,9 +39,12 @@ class DTSequenceDataset(Dataset):
         num_actions: int,
         state_index: int = 0,
         action_index: int = 1,
+        dfa_state_ids: list[np.ndarray] | None = None,
     ):
         if len(episodes_tokens) != len(episode_rewards):
             raise ValueError("episodes_tokens and episode_rewards length mismatch")
+        if dfa_state_ids is not None and len(dfa_state_ids) != len(episodes_tokens):
+            raise ValueError("dfa_state_ids and episodes_tokens length mismatch")
 
         self.spec = DTBatchSpec(context_len=int(context_len), pad_action_id=int(num_actions))
         self.num_actions = int(num_actions)
@@ -50,6 +53,8 @@ class DTSequenceDataset(Dataset):
 
         self.episodes: list[dict] = []
         self.indices: list[tuple[int, int]] = []
+
+        self.has_dfa_state_ids = dfa_state_ids is not None
 
         for ep_idx, (tokens, rewards) in enumerate(zip(episodes_tokens, episode_rewards)):
             if tokens.ndim != 2 or tokens.shape[0] < 2:
@@ -65,15 +70,23 @@ class DTSequenceDataset(Dataset):
                 continue
             if len(rewards) != T:
                 raise ValueError(f"Episode {ep_idx} rewards length {len(rewards)} != transitions {T}")
+            dfa_ids = None
+            if dfa_state_ids is not None:
+                dfa_ids = np.asarray(dfa_state_ids[ep_idx], dtype=np.int64).reshape(-1)
+                if len(dfa_ids) != T:
+                    raise ValueError(
+                        f"Episode {ep_idx} dfa_state_ids length {len(dfa_ids)} != transitions {T}"
+                    )
 
             rtg = _compute_rtg(rewards)
-            self.episodes.append(
-                {
-                    "states": states,
-                    "actions": actions,
-                    "rtg": rtg,
-                }
-            )
+            episode = {
+                "states": states,
+                "actions": actions,
+                "rtg": rtg,
+            }
+            if dfa_ids is not None:
+                episode["dfa_state_ids"] = dfa_ids
+            self.episodes.append(episode)
             cur_idx = len(self.episodes) - 1
             for t in range(T):
                 self.indices.append((cur_idx, t))
@@ -88,6 +101,7 @@ class DTSequenceDataset(Dataset):
         states = ep["states"]
         actions = ep["actions"]
         rtg = ep["rtg"]
+        dfa_state_ids = ep.get("dfa_state_ids")
 
         start = max(0, t - self.spec.context_len + 1)
         end = t + 1
@@ -95,6 +109,7 @@ class DTSequenceDataset(Dataset):
         state_seg = states[start:end]
         action_seg = actions[start:end]
         rtg_seg = rtg[start:end]
+        dfa_seg = None if dfa_state_ids is None else dfa_state_ids[start:end]
         step_seg = np.arange(start, end, dtype=np.int64)
 
         prev_action_seg = np.empty_like(action_seg)
@@ -119,7 +134,7 @@ class DTSequenceDataset(Dataset):
         targets_out[pad:] = action_seg
         mask_out[pad:] = 1.0
 
-        return (
+        base = (
             torch.from_numpy(states_out),
             torch.from_numpy(prev_actions_out),
             torch.from_numpy(rtg_out),
@@ -127,3 +142,9 @@ class DTSequenceDataset(Dataset):
             torch.from_numpy(targets_out),
             torch.from_numpy(mask_out),
         )
+        if dfa_seg is None:
+            return base
+
+        dfa_out = np.zeros(self.spec.context_len, dtype=np.int64)
+        dfa_out[pad:] = dfa_seg
+        return base + (torch.from_numpy(dfa_out),)

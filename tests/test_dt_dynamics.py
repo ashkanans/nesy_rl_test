@@ -151,6 +151,10 @@ def test_build_dataset_tabular_dynamics():
     assert probs[0, 0, 1] == pytest.approx(1.0)
     assert probs[1, 0, 0] == pytest.approx(1.0)
     assert stats["num_transition_examples"] == 2
+    counts = np.asarray(stats["state_action_counts"], dtype=np.float32)
+    assert counts.shape == (2, 3)
+    assert counts[0, 0] == pytest.approx(2.0)
+    assert counts[1, 0] == pytest.approx(0.0)
 
 
 def test_neural_discrete_dynamics_shape():

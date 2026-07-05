@@ -190,7 +190,7 @@ def build_dt_offline_source(args):
     raise ValueError(f"Unsupported DT env '{args.env}'")
 
 
-def build_dt_dataset(base_dataset, context_len: int):
+def build_dt_dataset(base_dataset, context_len: int, dfa_state_ids=None):
     episode_rewards = getattr(base_dataset, "episode_rewards", None)
     if episode_rewards is None:
         episode_rewards = [np.zeros(ep.shape[0] - 1, dtype=np.float32) for ep in base_dataset.episodes_tokens]
@@ -201,6 +201,7 @@ def build_dt_dataset(base_dataset, context_len: int):
         num_actions=base_dataset.env.action_space.n,
         state_index=0,
         action_index=1,
+        dfa_state_ids=dfa_state_ids,
     )
 
 

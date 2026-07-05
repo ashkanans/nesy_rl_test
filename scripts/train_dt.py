@@ -40,6 +40,17 @@ from planning.dt_runtime import (
     write_skip_metrics,
 )
 from planning.eval_runtime import ensure_run_dir, set_global_seed, write_json
+from planning.product_value import (
+    ProductValueConfig,
+    build_dfa_prefix_state_ids,
+    build_product_value_table,
+    compute_dt_dfa_product_value_loss,
+    default_product_value_cache_path,
+    load_product_value_table,
+    save_product_value_table,
+    write_offline_vs_oracle_comparison,
+    write_product_value_validation,
+)
 
 
 def get_arg_parser(add_help=True):
@@ -69,7 +80,7 @@ def get_arg_parser(add_help=True):
     p.add_argument(
         "--dt_logic_loss_type",
         type=str,
-        choices=["auto", "hazard", "dfa"],
+        choices=["auto", "hazard", "dfa", "dfa_product_value"],
         default="auto",
         help=(
             "DT logic loss: hazard keeps the legacy unsafe-state penalty; "
@@ -79,6 +90,26 @@ def get_arg_parser(add_help=True):
     )
     p.add_argument("--logic_rollout_horizon", type=int, default=2)
     p.add_argument("--logic_temperature", type=float, default=1.0)
+    p.add_argument("--product_value_max_iter", type=int, default=10000)
+    p.add_argument("--product_value_tol", type=float, default=1e-6)
+    p.add_argument("--product_value_dmax", type=float, default=None)
+    p.add_argument("--product_value_backup", type=str, choices=["hard", "soft"], default="hard")
+    p.add_argument("--product_value_gamma", type=float, default=1.0)
+    p.add_argument(
+        "--product_value_zero_support",
+        type=str,
+        choices=["pessimistic", "self_loop"],
+        default="pessimistic",
+    )
+    p.add_argument("--product_value_support_penalty", type=float, default=0.0)
+    p.add_argument("--product_value_soft_tau", type=float, default=1.0)
+    p.add_argument("--product_value_cache_path", type=str, default=None)
+    p.add_argument(
+        "--auto_product_value_cache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Build/load cached product-value Phi tables next to dataset artifacts.",
+    )
     p.add_argument(
         "--dt_logic_dynamics_backend",
         type=str,
@@ -98,6 +129,17 @@ def get_arg_parser(add_help=True):
         default=True,
     )
     p.add_argument("--dynamics_checkpoint_path", type=str, default=None)
+    p.add_argument(
+        "--auto_dynamics_checkpoint",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="For dataset artifacts, auto-detect <artifact folder>/dynamics/neural_dataset.pt.",
+    )
+    p.add_argument(
+        "--fit_missing_dynamics",
+        action="store_true",
+        help="Train neural dynamics if the requested/auto checkpoint is missing.",
+    )
     p.add_argument(
         "--save_dynamics_checkpoint",
         action=argparse.BooleanOptionalAction,
@@ -202,13 +244,38 @@ def _resolve_dt_logic_loss_type(args) -> str:
     requested = str(getattr(args, "dt_logic_loss_type", "auto"))
     if requested == "auto":
         return "dfa" if _has_formula_source(args) else "hazard"
-    if requested == "dfa" and not _has_formula_source(args):
-        raise ValueError("--dt_logic_loss_type dfa requires --spec, --ltl_formula, or --ltl_formulas.")
+    if requested in {"dfa", "dfa_product_value"} and not _has_formula_source(args):
+        raise ValueError(
+            f"--dt_logic_loss_type {requested} requires --spec, --ltl_formula, or --ltl_formulas."
+        )
     return requested
 
 
 def _to_device(batch, device):
     return [x.to(device) for x in batch]
+
+
+def _dataset_dynamics_checkpoint_path(dataset_artifact_path: str | None) -> str | None:
+    if not dataset_artifact_path:
+        return None
+    p = os.path.abspath(str(dataset_artifact_path))
+    if p.endswith(".meta.json"):
+        stem = p[: -len(".meta.json")]
+    elif p.endswith(".npz"):
+        stem = p[: -len(".npz")]
+    else:
+        stem = p
+    return os.path.join(os.path.dirname(stem), "dynamics", "neural_dataset.pt")
+
+
+def _support_counts_from_stats(stats, num_actions: int, num_states: int):
+    counts = None if stats is None else stats.get("state_action_counts")
+    if counts is None:
+        return None
+    arr = torch.as_tensor(counts, dtype=torch.float32)
+    if tuple(arr.shape) != (int(num_actions), int(num_states)):
+        return None
+    return arr
 
 
 def train(args):
@@ -237,11 +304,6 @@ def train(args):
         print(f"Dataset artifact saved: {dataset_artifact['npz_path']}")
         print(f"Dataset metadata saved: {dataset_artifact['meta_path']}")
 
-    dt_dataset = build_dt_dataset(base_dataset, context_len=args.context_len)
-    if len(dt_dataset) == 0:
-        raise RuntimeError("DT dataset is empty; cannot train.")
-
-    dataloader = DataLoader(dt_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False)
     num_states = int(base_dataset.env.observation_space.n)
     num_actions = int(base_dataset.env.action_space.n)
     transition_probs_t = None
@@ -249,18 +311,22 @@ def train(args):
     dt_logic_loss_type_effective = "none"
     dfa_adapter = None
     dfa_deep = None
+    raw_dfa = None
     dfa_formulas = None
     dynamics_stats = None
     dynamics_model_path = None
+    product_value_table = None
+    product_value_path = None
+    dfa_state_ids = None
     if float(args.logic_alpha) > 0.0:
         dt_logic_loss_type_effective = _resolve_dt_logic_loss_type(args)
         if dt_logic_loss_type_effective == "hazard":
             hazard = hazard_mask_for_env(args.env, base_dataset.env)
             hazard_mask_t = torch.from_numpy(hazard).float().to(device)
-        elif dt_logic_loss_type_effective == "dfa":
+        elif dt_logic_loss_type_effective in {"dfa", "dfa_product_value"}:
             from train_cb import build_adapter_and_dfa, resolve_formulas
 
-            dfa_adapter, dfa_deep, _ = build_adapter_and_dfa(args, base_dataset)
+            dfa_adapter, dfa_deep, raw_dfa = build_adapter_and_dfa(args, base_dataset)
             dfa_formulas = resolve_formulas(args, dataset=base_dataset)
             if isinstance(dfa_deep, (list, tuple)):
                 dfa_deep = [d.to(device) for d in dfa_deep]
@@ -281,6 +347,8 @@ def train(args):
         elif args.dt_logic_dynamics_backend == "neural_dataset":
             dataset_ids = build_dynamics_dataset_identifiers(base_dataset, args=args)
             requested_ckpt = str(args.dynamics_checkpoint_path).strip() if args.dynamics_checkpoint_path else None
+            if not requested_ckpt and bool(getattr(args, "auto_dynamics_checkpoint", True)):
+                requested_ckpt = _dataset_dynamics_checkpoint_path(getattr(args, "dataset_artifact_path", None))
             save_ckpt = bool(args.save_dynamics_checkpoint)
             if requested_ckpt:
                 dynamics_model_path = requested_ckpt
@@ -305,6 +373,12 @@ def train(args):
                     freeze_after_load=bool(args.dynamics_freeze_after_fit),
                 )
             else:
+                if requested_ckpt and not bool(getattr(args, "fit_missing_dynamics", False)):
+                    raise FileNotFoundError(
+                        "Neural dynamics checkpoint is required but missing: "
+                        f"{requested_ckpt}. Pass --fit_missing_dynamics to train it, "
+                        "or materialize it with scripts/materialize_cb_datasets.py --fit_neural_dynamics."
+                    )
                 dynamics_model, dynamics_stats = fit_neural_dynamics_model(
                     base_dataset=base_dataset,
                     hidden_dim=int(args.dynamics_hidden_dim),
@@ -343,6 +417,133 @@ def train(args):
         else:
             raise ValueError(f"Unsupported DT dynamics backend '{args.dt_logic_dynamics_backend}'")
 
+        if dt_logic_loss_type_effective == "dfa_product_value":
+            if dfa_adapter is None or dfa_deep is None or transition_probs_t is None:
+                raise RuntimeError("dfa_product_value requires DFA components and transition dynamics.")
+            if abs(float(getattr(args, "product_value_gamma", 1.0)) - 1.0) > 1e-9:
+                print(
+                    "[warn] --product_value_gamma != 1.0 changes the scale/centering of "
+                    "the product-value shaping term. Phi is still undiscounted SSP; this "
+                    "does not reproduce discounted-VI self-cancellation."
+                )
+            spec_label = str(getattr(args, "spec", None) or "custom_formula")
+            product_value_path = str(getattr(args, "product_value_cache_path", "") or "")
+            if not product_value_path and bool(getattr(args, "auto_product_value_cache", True)):
+                product_value_path = default_product_value_cache_path(
+                    getattr(args, "dataset_artifact_path", None),
+                    run_dir,
+                    str(args.dt_logic_dynamics_backend),
+                    spec_label,
+                )
+            if product_value_path and os.path.exists(product_value_path):
+                product_value_table = load_product_value_table(product_value_path)
+            else:
+                support_counts_np = None
+                support_counts_t = _support_counts_from_stats(dynamics_stats, num_actions, num_states)
+                if support_counts_t is not None:
+                    support_counts_np = support_counts_t.cpu().numpy()
+                product_value_table = build_product_value_table(
+                    transition_probs=transition_probs_t.detach().cpu().numpy(),
+                    adapter=dfa_adapter,
+                    raw_dfa=raw_dfa,
+                    support_counts=support_counts_np,
+                    config=ProductValueConfig(
+                        max_iter=int(args.product_value_max_iter),
+                        tol=float(args.product_value_tol),
+                        dmax=getattr(args, "product_value_dmax", None),
+                        backup=str(args.product_value_backup),
+                        gamma=float(args.product_value_gamma),
+                        zero_support=str(args.product_value_zero_support),
+                        support_penalty=float(args.product_value_support_penalty),
+                        soft_tau=float(args.product_value_soft_tau),
+                    ),
+                    metadata={
+                        "env": str(args.env),
+                        "spec": spec_label,
+                        "backend": str(args.dt_logic_dynamics_backend),
+                        "dataset_artifact_path": getattr(args, "dataset_artifact_path", None),
+                        "dynamics_checkpoint_path": dynamics_model_path,
+                    },
+                )
+                if product_value_path:
+                    save_product_value_table(product_value_path, product_value_table)
+            validation_dir = os.path.dirname(product_value_path) if product_value_path else os.path.join(
+                run_dir,
+                "product_value",
+                str(args.dt_logic_dynamics_backend),
+                spec_label,
+            )
+            start_state = None
+            grid_shape = None
+            env = getattr(base_dataset, "env", None)
+            if env is not None:
+                if hasattr(env, "start_pos") and hasattr(env, "_pos_to_state"):
+                    start_state = int(env._pos_to_state(env.start_pos))
+                if hasattr(env, "n_rows") and hasattr(env, "n_cols"):
+                    grid_shape = (int(env.n_rows), int(env.n_cols))
+            write_product_value_validation(
+                product_value_table,
+                validation_dir,
+                transition_probs=transition_probs_t.detach().cpu().numpy(),
+                start_state=start_state,
+                grid_shape=grid_shape,
+                strict=True,
+            )
+            if (
+                product_value_path
+                and str(args.dt_logic_dynamics_backend) != "tabular_env"
+                and raw_dfa is not None
+            ):
+                comparison_path = os.path.join(os.path.dirname(product_value_path), "offline_vs_oracle.json")
+                if os.path.exists(comparison_path):
+                    oracle_needed = False
+                else:
+                    oracle_needed = True
+            else:
+                oracle_needed = False
+            if oracle_needed:
+                try:
+                    oracle_table = build_product_value_table(
+                        transition_probs=build_tabular_dynamics(base_dataset),
+                        adapter=dfa_adapter,
+                        raw_dfa=raw_dfa,
+                        support_counts=None,
+                        config=ProductValueConfig(
+                            max_iter=int(args.product_value_max_iter),
+                            tol=float(args.product_value_tol),
+                            dmax=getattr(args, "product_value_dmax", None),
+                            backup=str(args.product_value_backup),
+                            gamma=float(args.product_value_gamma),
+                            zero_support="self_loop",
+                            support_penalty=0.0,
+                            soft_tau=float(args.product_value_soft_tau),
+                        ),
+                        metadata={
+                            "env": str(args.env),
+                            "spec": spec_label,
+                            "backend": "tabular_env",
+                            "diagnostic_only": True,
+                        },
+                    )
+                    write_offline_vs_oracle_comparison(
+                        offline_table=product_value_table,
+                        oracle_table=oracle_table,
+                        out_dir=os.path.dirname(product_value_path),
+                    )
+                except Exception as exc:
+                    print(f"[warn] product-value oracle comparison skipped: {exc}")
+            dfa_state_ids = build_dfa_prefix_state_ids(base_dataset, dfa_adapter, raw_dfa)
+
+    dt_dataset = build_dt_dataset(
+        base_dataset,
+        context_len=args.context_len,
+        dfa_state_ids=dfa_state_ids,
+    )
+    if len(dt_dataset) == 0:
+        raise RuntimeError("DT dataset is empty; cannot train.")
+
+    dataloader = DataLoader(dt_dataset, batch_size=args.batch_size, shuffle=True, drop_last=False)
+
     model = DecisionTransformerDiscrete(
         num_states=num_states,
         num_actions=num_actions,
@@ -358,14 +559,31 @@ def train(args):
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     epoch_losses = []
+    epoch_supervised_losses = []
     epoch_logic_losses = []
+    product_phi_t = None
+    product_next_q_t = None
+    product_support_counts_t = None
+    if product_value_table is not None:
+        product_phi_t = torch.from_numpy(product_value_table.phi).float().to(device)
+        product_next_q_t = torch.from_numpy(product_value_table.next_q).long().to(device)
+        if product_value_table.support_counts is not None:
+            product_support_counts_t = torch.from_numpy(product_value_table.support_counts).float().to(device)
     model.train()
     for epoch in range(args.epochs):
-        running = 0.0
+        running_total = 0.0
+        running_sup = 0.0
         running_logic = 0.0
         count = 0
         for batch in dataloader:
-            states, prev_actions, rtg, timesteps, targets, mask = _to_device(batch, device)
+            batch = _to_device(batch, device)
+            if len(batch) == 6:
+                states, prev_actions, rtg, timesteps, targets, mask = batch
+                dfa_state_ids_t = None
+            elif len(batch) == 7:
+                states, prev_actions, rtg, timesteps, targets, mask, dfa_state_ids_t = batch
+            else:
+                raise ValueError(f"Unexpected DT batch size {len(batch)}.")
             logits = model(states, prev_actions, rtg, timesteps, attention_mask=mask)
             sup_loss = F.cross_entropy(
                 logits.reshape(-1, num_actions),
@@ -407,19 +625,47 @@ def train(args):
                 )
                 if not torch.isfinite(logic_loss):
                     logic_loss = logits.new_zeros(())
+            elif (
+                dt_logic_loss_type_effective == "dfa_product_value"
+                and transition_probs_t is not None
+                and product_phi_t is not None
+                and product_next_q_t is not None
+                and dfa_state_ids_t is not None
+            ):
+                logic_loss = compute_dt_dfa_product_value_loss(
+                    logits=logits,
+                    states=states,
+                    dfa_state_ids=dfa_state_ids_t,
+                    attention_mask=mask,
+                    transition_probs=transition_probs_t,
+                    phi=product_phi_t,
+                    next_q=product_next_q_t,
+                    support_counts=product_support_counts_t,
+                    support_penalty=float(args.product_value_support_penalty),
+                    gamma=float(args.product_value_gamma),
+                    temperature=float(args.logic_temperature),
+                )
+                if not torch.isfinite(logic_loss):
+                    logic_loss = logits.new_zeros(())
             loss = sup_loss + float(args.logic_alpha) * logic_loss
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             optimizer.step()
-            running += float(loss.item())
+            running_total += float(loss.item())
+            running_sup += float(sup_loss.item())
             running_logic += float(logic_loss.item()) if torch.isfinite(logic_loss) else 0.0
             count += 1
-        mean_loss = running / max(1, count)
+        mean_total = running_total / max(1, count)
+        mean_sup = running_sup / max(1, count)
         mean_logic = running_logic / max(1, count)
-        epoch_losses.append(mean_loss)
+        epoch_losses.append(mean_total)
+        epoch_supervised_losses.append(mean_sup)
         epoch_logic_losses.append(mean_logic)
-        print(f"epoch {epoch} | action_loss {mean_loss:.4f} | logic_loss {mean_logic:.4f}")
+        print(
+            f"epoch {epoch} | total_loss {mean_total:.4f} | "
+            f"supervised_action_loss {mean_sup:.4f} | logic_loss {mean_logic:.4f}"
+        )
 
     rtg_target = (
         float(args.rtg_target)
@@ -453,6 +699,10 @@ def train(args):
                 "dt_logic_dynamics_backend": str(args.dt_logic_dynamics_backend),
                 "dynamics_stats": dynamics_stats,
                 "dfa_formulas": dfa_formulas,
+                "product_value_path": product_value_path,
+                "product_value_metadata": None
+                if product_value_table is None
+                else dict(product_value_table.metadata),
             },
         },
         ckpt_path,
@@ -468,6 +718,8 @@ def train(args):
         checkpoint_path=ckpt_path,
     )
     metrics["action_loss"] = float(epoch_losses[-1]) if epoch_losses else None
+    metrics["total_loss"] = float(epoch_losses[-1]) if epoch_losses else None
+    metrics["supervised_action_loss"] = float(epoch_supervised_losses[-1]) if epoch_supervised_losses else None
     metrics["logic_loss"] = float(epoch_logic_losses[-1]) if epoch_logic_losses else None
     metrics["dataset_size"] = int(len(dt_dataset))
     metrics["context_len"] = int(args.context_len)
@@ -475,6 +727,8 @@ def train(args):
     summary = {
         "epochs": int(args.epochs),
         "epoch_action_losses": [float(x) for x in epoch_losses],
+        "epoch_total_losses": [float(x) for x in epoch_losses],
+        "epoch_supervised_action_losses": [float(x) for x in epoch_supervised_losses],
         "epoch_logic_losses": [float(x) for x in epoch_logic_losses],
         "device": str(device),
         "checkpoint_path": ckpt_path,
@@ -482,6 +736,8 @@ def train(args):
         "dt_logic_loss_type": str(getattr(args, "dt_logic_loss_type", "auto")),
         "dt_logic_loss_type_effective": str(dt_logic_loss_type_effective),
         "dfa_formulas": dfa_formulas,
+        "product_value_path": product_value_path,
+        "product_value_metadata": None if product_value_table is None else dict(product_value_table.metadata),
     }
     if dynamics_model_path is not None:
         summary["dynamics_checkpoint_path"] = dynamics_model_path

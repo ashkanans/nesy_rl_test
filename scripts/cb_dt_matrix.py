@@ -98,6 +98,8 @@ SUMMARY_FIELDS = [
     "better_than_random",
     "rtg_target",
     "action_loss",
+    "supervised_action_loss",
+    "total_loss",
     "logic_loss",
     "success_rate",
     "dataset_size",
@@ -136,6 +138,9 @@ def _shared_dynamics_checkpoint_path(job: Job, cfg: WorkerConfig) -> str | None:
     explicit = _cmd_arg(cfg.train_cmd_common, "--dynamics_checkpoint_path", None)
     if explicit:
         return explicit
+    if _cmd_arg(cfg.extra_args, "--dataset_artifact_path", None):
+        # Let train_dt.py auto-detect <dataset folder>/dynamics/neural_dataset.pt.
+        return None
     save_flag = "--save_dynamics_checkpoint" in cfg.train_cmd_common
     no_save_flag = "--no-save_dynamics_checkpoint" in cfg.train_cmd_common
     if no_save_flag or not save_flag:
@@ -914,6 +919,21 @@ def _build_train_cmd_common(args: argparse.Namespace) -> list[str]:
     cmd.extend(["--dt_logic_loss_type", str(args.dt_logic_loss_type)])
     cmd.extend(["--logic_rollout_horizon", str(args.logic_rollout_horizon)])
     cmd.extend(["--logic_temperature", str(args.logic_temperature)])
+    cmd.extend(["--product_value_max_iter", str(args.product_value_max_iter)])
+    cmd.extend(["--product_value_tol", str(args.product_value_tol)])
+    cmd.extend(["--product_value_backup", str(args.product_value_backup)])
+    cmd.extend(["--product_value_gamma", str(args.product_value_gamma)])
+    cmd.extend(["--product_value_zero_support", str(args.product_value_zero_support)])
+    cmd.extend(["--product_value_support_penalty", str(args.product_value_support_penalty)])
+    cmd.extend(["--product_value_soft_tau", str(args.product_value_soft_tau)])
+    if args.product_value_dmax is not None:
+        cmd.extend(["--product_value_dmax", str(args.product_value_dmax)])
+    if args.product_value_cache_path is not None:
+        cmd.extend(["--product_value_cache_path", str(args.product_value_cache_path)])
+    if args.auto_product_value_cache:
+        cmd.append("--auto_product_value_cache")
+    else:
+        cmd.append("--no-auto_product_value_cache")
     cmd.extend(["--dt_logic_dynamics_backend", str(args.dt_logic_dynamics_backend)])
     cmd.extend(["--dynamics_epochs", str(args.dynamics_epochs)])
     cmd.extend(["--dynamics_batch_size", str(args.dynamics_batch_size)])
@@ -943,6 +963,12 @@ def _build_train_cmd_common(args: argparse.Namespace) -> list[str]:
         cmd.append("--no-save_dynamics_checkpoint")
     if args.dynamics_checkpoint_path is not None:
         cmd.extend(["--dynamics_checkpoint_path", str(args.dynamics_checkpoint_path)])
+    if args.auto_dynamics_checkpoint:
+        cmd.append("--auto_dynamics_checkpoint")
+    else:
+        cmd.append("--no-auto_dynamics_checkpoint")
+    if args.fit_missing_dynamics:
+        cmd.append("--fit_missing_dynamics")
     if args.cb_policy_mix_normal_spec is not None:
         cmd.extend(["--cb_policy_mix_normal_spec", str(args.cb_policy_mix_normal_spec)])
     if args.use_safe_dfa:
@@ -1021,9 +1047,29 @@ def parse_args(argv: list[str] | None = None):
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight_decay", type=float, default=1e-4)
     p.add_argument("--grad_clip", type=float, default=1.0)
-    p.add_argument("--dt_logic_loss_type", type=str, choices=["auto", "hazard", "dfa"], default="auto")
+    p.add_argument(
+        "--dt_logic_loss_type",
+        type=str,
+        choices=["auto", "hazard", "dfa", "dfa_product_value"],
+        default="auto",
+    )
     p.add_argument("--logic_rollout_horizon", type=int, default=2)
     p.add_argument("--logic_temperature", type=float, default=1.0)
+    p.add_argument("--product_value_max_iter", type=int, default=10000)
+    p.add_argument("--product_value_tol", type=float, default=1e-6)
+    p.add_argument("--product_value_dmax", type=float, default=None)
+    p.add_argument("--product_value_backup", type=str, choices=["hard", "soft"], default="hard")
+    p.add_argument("--product_value_gamma", type=float, default=1.0)
+    p.add_argument(
+        "--product_value_zero_support",
+        type=str,
+        choices=["pessimistic", "self_loop"],
+        default="pessimistic",
+    )
+    p.add_argument("--product_value_support_penalty", type=float, default=0.0)
+    p.add_argument("--product_value_soft_tau", type=float, default=1.0)
+    p.add_argument("--product_value_cache_path", type=str, default=None)
+    p.add_argument("--auto_product_value_cache", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument(
         "--dt_logic_dynamics_backend",
         type=str,
@@ -1039,6 +1085,8 @@ def parse_args(argv: list[str] | None = None):
     p.add_argument("--dynamics_val_fraction", type=float, default=0.1)
     p.add_argument("--dynamics_freeze_after_fit", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--dynamics_checkpoint_path", type=str, default=None)
+    p.add_argument("--auto_dynamics_checkpoint", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--fit_missing_dynamics", action="store_true")
     p.add_argument("--save_dynamics_checkpoint", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--dynamics_max_transition_entries", type=int, default=10000000)
     p.add_argument("--dynamics_temperature", type=float, default=1.0)
