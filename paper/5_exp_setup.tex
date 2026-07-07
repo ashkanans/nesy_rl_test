@@ -1,6 +1,6 @@
 \section{Experimental Evaluation}
 
-To evaluate the proposed framework, we conduct experiments\footnote{The code is publicly available at: https://github.com/ashkanans/nesy\_rl\_test.} on a controlled navigation benchmark designed to simulate safety-critical decision making under temporally extended constraints. The experiments focus on understanding how the proposed logic regularization influences the behavior of transformer-based policies and how different levels of logical guidance affect the trade-off between task performance and constraint satisfaction.
+To evaluate the framework, we conduct experiments\footnote{The code is publicly available at: https://github.com/ashkanans/nesy\_rl\_test.} on a controlled navigation benchmark designed to simulate safety-critical decision making under temporally extended constraints. The experiments focus on how the logic regularization influences the behavior of transformer-based policies and how different levels of logical guidance affect the trade-off between task performance and constraint satisfaction.
 
 \subsection*{Environment}
 
@@ -51,20 +51,22 @@ Notably, our framework goes beyond most papers on Safe RL, allowing the specific
 \centering
 \includegraphics[width=0.34\linewidth]{figures/safe_dfa2.png}
 \includegraphics[width=0.65\linewidth]{figures/reach_while_safe_dfa.png}
-\caption{DFAs for Safety and Reach-while-Safe constraints}
+\caption{DFAs for Safety and Reach-while-Safe constraints. The incoming arrow denotes the initial state; double circles denote accepting states. Edges are labeled by propositions/symbols that trigger transitions.
+A trace satisfies the formula if, after consuming all symbols up to EOT, the DFA is in an accepting state.
+}
 \label{fig:dfas}
 \end{figure}
 
 \subsection*{Methods Compared}
 
-We evaluate variants of the Trajectory Transformer and Decision Transformer architectures with different levels of logical regularization. We consider vanilla TT and DT as the baseline model, without any logical regularization. This corresponds to setting $\alpha=0$ to Equation \ref{eq:loss_balance}. Then, we impose logic regularization, that is, the training objective combines the standard sequence-prediction loss with the proposed logic loss computed by the use of differentiable DFAs. In order to control the weight of logic regularization and study how it affects return and constraint satisfaction, we vary the trade-off parameter $\alpha \in \{0.01,0.05,0.1,0.2,0.4, 0.6, 0.8\}$. All models use greedy decoding at inference time to isolate the effect of the logic regularization during training. 
+We evaluate variants of the TT and DT architectures with different levels of logical regularization. We consider vanilla TT and DT as the baseline model, without any logical regularization. This corresponds to setting $\alpha=0$ to Eq. \ref{eq:loss_balance}. Then, we impose logic regularization, that is, the training objective combines the standard sequence-prediction loss with the proposed logic loss computed by the use of differentiable DFAs. To control the weight of logic regularization and study how it affects return and constraint satisfaction, we vary the trade-off parameter $\alpha \in \{0.01,0.05,0.1,0.2,0.4, 0.6, 0.8\}$. All models use greedy decoding at inference time to isolate the effect of the logic regularization during training. 
 
 \subsection*{Evaluation Metrics}
 
 We evaluate policies using several metrics capturing both task performance and logical compliance:
 \begin{itemize}
     \item \textbf{Return: } the average episodic reward obtained by the agent.
-    \item \textbf{Satisfaction Rate: } the fraction of trajectories that satisfy the \ltlf specification when evaluated using the compiled DFA.
+    \item \textbf{Satisfaction Rate: } the fraction of trajectories that satisfy the \ltlf specification.% when evaluated using the compiled DFA.
     \item \textbf{Goal Rate: } the proportion of episodes in which the agent successfully reaches a goal state.
     \item \textbf{Bomb Hit Rate: } the fraction of trajectories that terminate by entering a bomb cell.
 \end{itemize}

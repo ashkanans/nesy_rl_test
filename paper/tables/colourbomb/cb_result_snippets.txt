@@ -1,4 +1,0 @@
-[avoid_bombs] best satisfaction alpha=0.4: sat=0.445, goal=0.012, bomb=0.555, ret=-0.862
-[avoid_bombs] best goal alpha=0.05: sat=0.261, goal=0.049, bomb=0.739, ret=-0.946
-[reach_goal_while_safe] best satisfaction alpha=0.1: sat=0.047, goal=0.047, bomb=0.650, ret=-0.903
-[reach_goal_while_safe] best goal alpha=0.1: sat=0.047, goal=0.047, bomb=0.650, ret=-0.903

@@ -63,7 +63,7 @@ flowchart TD
     Weight --> LogicLoss["logic_loss = -log(expected acceptance)"]
     Floor --> LogicLoss
     StateOnly --> LogicLoss
-    L --> Total["total loss<br/>(1-alpha)*CE + alpha*logic_loss"]
+    L --> Total["total loss<br/>CE + alpha_logic*logic_loss"]
     LogicLoss --> Total
     Total --> TrainStep["backprop, grad clip, AdamW"]
     TrainStep --> Checkpoint["cb_state_epoch.pt"]

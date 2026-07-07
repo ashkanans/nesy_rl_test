@@ -3,7 +3,7 @@
 In offline RL, the agent is provided with a fixed dataset $\mathcal{D}=\{\boldsymbol{\tau}^{(i)}\}_{i=1}^N$ of previously collected trajectories.
 %Let $\mathcal{D}=\{\boldsymbol{\tau}^i\}_{i=1}^N$ be an dataset of trajectories. Each trajectory is a finite sequence of transitions and terminal marker, i.e. it has the form of (\ref{eq:trace_form}) plus a special symbol $\texttt{END}$ at the end of the trace. At each timestamp, together with state dimensions, action dimensions and rewards, we can have an optional environment-specific auxiliary fields (e.g., safety cost).
 %Let $\mathcal{D}=\{\boldsymbol{\tau}^{(i)}\}_{i=1}^N$ be a dataset of trajectories. 
-Each trajectory is a finite sequence of transitions and an \emph{end-of-trace} symbol $\texttt{EOT}$, i.e. $\boldsymbol{\tau} = (y^1,\ldots,y^T,\texttt{EOT})$, where each transition token $y^j$ group encodes state, action, reward, and optional environment-specific auxiliary fields (e.g., safety cost). 
+Each trajectory is a finite sequence of transitions and an \emph{end-of-trace} symbol $\texttt{EOT}$\footnote{\ltlf is interpreted over finite traces. We append $\texttt{EOT}$ to each trajectory to explicitly mark its termination. The DFA consumes the trajectory symbols up to $\texttt{EOT}$, and satisfaction is evaluated by whether the automaton reaches an accepting state.}, i.e. $\boldsymbol{\tau} = (y^1,\ldots,y^T,\texttt{EOT})$, where each transition token $y^j$ group encodes state, action, reward, and optional environment-specific auxiliary fields (e.g., safety cost). 
 %In addition to the return signal, 
 Here, we also consider some prior knowledge about the task, expressed as \ltlf constraints, to capture high-level behavioral requirements. Given an \ltlf formula $\varphi$, our objective is to learn a trajectory generation policy that maximizes both the expected return of the policy and the probability that generated trajectories satisfy $\varphi$.
 %
@@ -16,19 +16,19 @@ We define atomic propositions through an environment-specific extractor
 and the \ltlf formula $\varphi$ is defined over these $K$ propositional symbols. Note that, in our experiments, proposition extraction is \textit{state-centric}, i.e. $\varphi$ is defined only over state dimensions, but our approach is fully general and supports also imposing constraints on action, state-action pairs and auxiliary-terms.
 
 A logic adapter is used to define the authoritative token schema and the unique end token identifier shared by dataset builders, token-to-symbol mapping, DFA rollout, and logic-loss evaluation. 
-Satisfaction evaluation follows the standard \ltlf semantics (see Sec. \ref{sec:ltlf}) and is therefore defined on complete finite traces; traces without an end marker are treated as incomplete and unsatisfied. This design avoids inconsistent termination handling across modules and ensures agreement between hard DFA evaluation and differentiable soft evaluation.
-
+Satisfaction evaluation follows the standard \ltlf semantics (see Sec. \ref{sec:ltlf}) and is therefore defined on complete finite traces. This design avoids inconsistent termination handling across modules and ensures agreement between hard DFA evaluation and differentiable soft evaluation.
+%
 As explained in the background, we assume an autoregressive neural model $f_\theta$ with trainable parameters $\theta$ that estimates an approximation $P_\theta$ of the probability of the next event $\tau_t$ given a trace of previous events $\boldsymbol{\tau}_{<t}$ (Equation~\ref{eq:next_act_pred}):
 \begin{equation} 
 \label{eq:RNN}
 %\[
 \begin{array}{ll}
      \tilde{y}_t = f_\theta(\boldsymbol{\tau}_{<t}) \\
-     P(\tau_{t} = \tau_i \mid \boldsymbol{\tau}_{<t}) \approx \tilde{y}_t[i].
+     P(\tau_{t} = v_i \mid \boldsymbol{\tau}_{<t}) \approx \tilde{y}_t[i].
 \end{array}
 %\]
 \end{equation}
-Note that we do not make any assumptions about the neural model, except that it can estimate the probability of the next activity given a sequence of previous ones. As a result, our approach is entirely \textit{model-agnostic} and can be readily applied to any autoregressive model (provided that the logic adapter is changed consistently). The model parameters are typically trained using a supervised loss $L_{\mathcal{D}}$, evaluated on a dataset $\mathcal{D}$ of ground-truth traces obtained by observing the process. The loss for a trace $\boldsymbol{\tau} \in \mathcal{D}$ of length $T$ is defined as follows:
+where, $\tau_{t}$ denotes the token at position $t$, and $v_i$ is an element of the token vocabulary. Note that we do not make any assumptions about the neural model. The model parameters are typically trained using a supervised loss $L_{\mathcal{D}}$, evaluated on a dataset $\mathcal{D}$ of ground-truth traces obtained by observing the process. The loss for a trace $\boldsymbol{\tau} \in \mathcal{D}$ of length $T$ is defined as follows:
 \begin{equation} \label{eq:sup_loss}
     L_{\mathcal{D}}(\boldsymbol{\tau}) = \frac{1}{T} \sum_{t=1}^T \text{cross-entropy}(f_\theta(\boldsymbol{\tau}_{<t}), \tau_{t}) .
 \end{equation}
@@ -55,10 +55,10 @@ However, some types of formulas, such as safety constraints, once translated int
 \end{comment}
 
 \noindent
-Computing this probability exactly is infeasible, since it would require to enumerate al possible traces of maximum length $T$. In \cite{UmiliPMAI24,mezini2025neuro} a differentiable procedure to approximate the previous probability at each optimization step of the autoregressor is designed. In particular, they introduce a logic loss function $L_\varphi$, and compute the training objective as a linear combination of the logic and the supervised loss:
+Computing this probability exactly is infeasible, since it would require to enumerate all possible traces of maximum length $T$. In \cite{UmiliPMAI24,mezini2025neuro} a differentiable procedure to approximate the previous probability at each optimization step of the autoregressor is designed. They introduce a logic loss function $L_\varphi$, and compute the training objective as a linear combination of the logic and the supervised loss:
 \begin{equation}
 \label{eq:loss_balance}
-    L = \alpha L_{\mathcal{D}} + (1 - \alpha) L_\varphi,
+    L = \alpha L_\varphi + (1 - \alpha) L_{\mathcal{D}},
 \end{equation}
 %
 with $\alpha$ being a trade-off parameter between 0 and 1 that balances the influence of each loss on the training process.
@@ -67,7 +67,7 @@ Here we adapt the logic loss computation to offline RL domains and apply it at t
 
 \subsection{Automata-Based Satisfaction and Logic Loss}
 
-Now, we briefly discuss how to approximate the target probability in Equation \ref{eq:logic_prob}. Specifically, \cite{mezini2025neuro} uses a Monte Carlo estimation by sampling a set of complete traces $\{\boldsymbol{\tau}^{(1)}, \boldsymbol{\tau}^{(2)}, \ldots, \boldsymbol{\tau}^{(N)}\} \sim P_\theta$ according to the distribution learned by the autoregressor, and compute an approximation of the target probability as follows:
+Now, we can discuss how to approximate the target probability in Eq. \ref{eq:logic_prob}. Specifically, \cite{mezini2025neuro} uses a Monte Carlo estimation by sampling a set of complete traces $\{\boldsymbol{\tau}^{(1)}, \boldsymbol{\tau}^{(2)}, \ldots, \boldsymbol{\tau}^{(N)}\} \sim P_\theta$ according to the distribution learned by the autoregressor, and compute an approximation of the probability as follows:
 \begin{equation} \label{eq:montecarlo_approx}
     \hat{P}_{\theta \vDash \varphi} = \frac{1}{N} \sum_{i=1}^N \mathbb{I} \{ \boldsymbol{\tau}^{(i)} \vDash \varphi \}.
 \end{equation}
@@ -90,11 +90,14 @@ Many alternatives exist in the literature to evaluate continuous satisfaction of
 \end{equation}
 %
 \noindent
-Finally, we are able to compute the logic loss $L_\varphi$, which enforces the satisfaction of prior knowledge over entire traces:
+Finally, we compute the logic loss, which enforces the satisfaction of prior knowledge over entire traces:
 \begin{equation}
 L_\varphi = - \log \left( \hat{P}_{\theta \vDash \varphi} \right).
 \end{equation}
-%and we use it in Equation \ref{eq:loss_balance}. 
+
+
+
+
 
 \begin{comment}
 \subsection{TT: Logic-Regularized Training and Automaton-Aware Decoding}
@@ -118,3 +121,11 @@ We consider the following DT family methods:
 \end{itemize}
 For DT evaluation, we additionally report a random policy baseline as a reference.
 \end{comment}
+
+
+\subsection{Instantiating the Framework for TT and DT}
+
+The mechanism above requires a differentiable trace of soft symbols to roll out the DFA. How this trace is obtained depends on what the underlying autoregressive model generates. Trajectory Transformers predict the full
+trajectory token-by-token, including state dimensions.
+Decision Transformers, by contrast, are conditioned on returns, states, and past actions, and predict only the
+action distribution; the state at the next timestep is not generated by the model. To recover the state evolution needed for the DFA rollout, we pair the DT with a separately learned, differentiable model of the environment dynamics. This preserves an end-to-end differentiable pipeline while requiring, for DT-based instantiations, an auxiliary dynamics model that is not necessary for TT-based ones.

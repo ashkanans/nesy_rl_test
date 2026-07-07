@@ -50,7 +50,7 @@ flowchart TD
 
     DeepDFA --> TTPath
     Adapter --> TTPath
-    TTPath --> TTLoss["TT training loss<br/>(1-alpha)*CE + alpha*DeepDFA logic"]
+    TTPath --> TTLoss["TT training loss<br/>CE + alpha_logic*DeepDFA logic"]
     TTLoss --> TTCheckpoint["TT checkpoint<br/>cb_state_epoch.pt"]
 
     DatasetArtifact --> DTWindow["DT windows<br/>state, previous action, RTG, timestep -> action"]

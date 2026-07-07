@@ -1,6 +1,10 @@
 
 \subsection*{Experiments on Decision Transformers}
-Here we report results obtained by adding the logic loss to Decision Transformers. The goal of these experiments is to assess the effectiveness of logic regularization on both safety and task performance.
+Here, we report the preliminary results obtained by DTs. 
+%The goal of these experiments is to assess the effectiveness of logic regularization on both safety and task performance. 
+All the experiments are repeated three times with different random seeds; the small standard deviation is due to the deterministic gridworld dynamics.
+
+
 \paragraph{Invariant Safety.}
 We report Decision Transformer (DT) alpha-sweep results with greedy decoding.
 For the invariant safety specification $G(\neg bomb)$, low-to-mid regularization strengths ($\alpha \leq 0.4$) do not improve behavior over vanilla DT: the agent still hits bombs and never reaches the goal.
@@ -10,7 +14,7 @@ However, $\alpha=0.6$ is overly conservative (goal rate $=0$), while $\alpha=0.8
 \begin{figure}[!th]
 \centering
 \includegraphics[width=\linewidth]{figures/colourbomb/cb_dt_alpha_sweep_avoid_bombs.png}
-\caption{DT results for the invariant safety constraint as a function of $\alpha$. Plots report the mean and standard deviation over three runs.}
+\caption{DT results for the invariant safety constraint as a function of $\alpha$.}
 \label{fig:cb_dt_alpha_avoid}
 \end{figure}
 
@@ -22,8 +26,8 @@ Only $\alpha=0.8$ jointly achieves safety and goal attainment, giving the best s
 
 \begin{figure}[!th]
 \centering
-\includegraphics[width=0.89\linewidth]{figures/colourbomb/cb_dt_alpha_sweep_reach_goal_while_safe.png}
-\caption{DT results for the Reach-while-Safe constraint as a function of $\alpha$. Plots report the mean and standard deviation over three runs.}
+\includegraphics[width=0.9\linewidth]{figures/colourbomb/cb_dt_alpha_sweep_reach_goal_while_safe.png}
+\caption{DT results for the Reach-while-Safe constraint as a function of $\alpha$.}
 \label{fig:cb_dt_alpha_tradeoff}
 \end{figure}
 
@@ -72,12 +76,12 @@ Spec & Setting & Satisfaction & Goal & Bomb Hit & Return \\
 \subsection*{Experiments on Trajectory Transformers}
 We now present preliminary results obtained by our implementation based on Trajectory Transformers. 
 \paragraph{Invariant Safety.}
-We first analyze the invariant safety specification $G(\neg bomb)$. Figure \ref{fig:cb_alpha_avoid} shows that small values of $\alpha$ do not improve safety compared to the baseline, while larger values of the logic regularization provide measurable benefits. Setting $\alpha=0.4$ achieves the highest satisfaction rate. In general, the logic-regularized policy reduces the probability of entering bomb cells and improves overall compliance with the specification. At the same time, it does not affect task performance, for which our method maintains comparable results. Notably, setting $\alpha=0.4$ improves also the return with respect to the baseline.
+We first analyze the invariant safety specification $G(\neg bomb)$. Figure \ref{fig:cb_alpha_avoid} shows that small values of $\alpha$ do not improve safety compared to the baseline, while larger values provide measurable benefits. Setting $\alpha=0.8$ achieves the highest satisfaction rate. In general, the logic-regularized policy reduces the probability of entering bomb cells and improves overall compliance with the specification. At the same time, it does not affect task performance, for which our method maintains comparable results. Notably, setting $\alpha=0.8$ improves also the return wrt the baseline.
 
 \begin{figure}[!th]
 \centering
-\includegraphics[width=\linewidth]{figures/colourbomb/cb_alpha_sweep_avoid_bombs.png}
-\caption{Results under the safety constraint as a function of the weighting loss parameter $\alpha$. Plots report the mean and standard deviation over three runs. \textcolor{blue}{Ele: Perchè qui non mettiamo anche goal rate?} \ELE{TODO: alpha 0.6 and 0.8}}
+\includegraphics[width=0.9\linewidth]{figures/colourbomb/cb_alpha_sweep_avoid_bombs.png}
+\caption{Results under the safety constraint as a function of the weighting loss parameter $\alpha$.}
 \label{fig:cb_alpha_avoid}
 \end{figure}
 
@@ -92,7 +96,7 @@ It is worth highlighting that, also in this case, the return associated with val
 \begin{figure}[!th]
 \centering
 \includegraphics[width=0.9\linewidth]{figures/colourbomb/cb_alpha_sweep_reach_goal_while_safe.png}
-\caption{Results under the Reach-while-Safe constraint as a function of the weighting loss parameter $\alpha$. Plots report the mean and standard deviation over three runs. \ELE{TODO: alpha 0.6 and 0.8}}
+\caption{Results under the Reach-while-Safe constraint as a function of the weighting loss parameter $\alpha$.}
 \label{fig:cb_alpha_tradeoff}
 \end{figure}
 
@@ -118,8 +122,10 @@ Table \ref{tab:cb_key_results} compares the best configurations for each specifi
 
 \paragraph{Quantitative Summary.}
 Table~\ref{tab:cb_key_results} reports representative configurations illustrating the trade-offs observed in the experiments.
-For the invariant safety task, the logic-regularized model with $\alpha=0.4$ increases both the satisfaction rate and the return, while performing slightly worse than the baseline in terms of reaching the goal. For the Reach-while-Safe specification, the best configuration is $\alpha=0.1$, where our approach again improves both the satisfaction rate and the return. It is worth noting that including the reachability of the goal state in the trace constraint helps us in improving the goal-reached rate itself, while slightly degrading performances with respect to the bomb-hit rate.
-These results confirm that incorporating logical knowledge into the training objective can generally improve safety-related metrics while preserving competitive performance. In general, tuning the weighting parameter $\alpha$ remains important to achieve peak performance.
+For the invariant safety task, the logic-regularized model with $\alpha=0.8$ increases both the satisfaction rate, the goal rate, and the return. For the Reach-while-Safe specification, the best configuration is $\alpha=0.1$, where our approach again improves both the satisfaction rate and the return. It is worth noting that including the reachability of the goal state in the trace constraint helps us in improving the goal-reached rate itself, while slightly degrading performances with respect to the bomb-hit rate.
+These results confirm that incorporating logical knowledge into the training objective can improve safety-related metrics while preserving competitive performance in both DT and TT. In both cases, tuning the $\alpha$ parameter remains crucial for achieving high performance. However, compared to DT, the improvements observed in the TT experiments are surprisingly more moderate. We leave to future work a deeper investigation into the reasons behind this difference.
+
+
 
 \begin{table}[!t]
 \centering
@@ -128,8 +134,8 @@ These results confirm that incorporating logical knowledge into the training obj
 \toprule
 Spec & Setting & Satisfaction & Goal & Bomb Hit & Return \\
 \midrule
-\texttt{safety} & vanilla ($\alpha=0$) & 0.353 & \textbf{0.018} & 0.647 & -0.929 \\
-\texttt{safety} & logic ($\alpha=0.4$) & \textbf{0.445} & 0.012 & \textbf{0.555} & \textbf{-0.862} \\
+\texttt{safety} & vanilla ($\alpha=0$) & 0.353 & 0.018 & 0.647 & -0.929 \\
+\texttt{safety} & logic ($\alpha=0.8$) & \textbf{0.499} & \textbf{0.027} & \textbf{0.470} & \textbf{-0.792} \\
 %\texttt{safety} & logic ($\alpha=0.05$) & 0.261 & \textbf{0.049} & 0.739 & -0.946 \\
 \midrule
 \texttt{reach-while-safe} & vanilla ($\alpha=0$) & 0.018 & 0.018 & \textbf{0.647} & -0.929 \\

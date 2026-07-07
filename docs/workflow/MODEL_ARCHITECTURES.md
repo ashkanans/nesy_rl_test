@@ -45,7 +45,7 @@ Output:
 
 ```text
 logits : [B, T, vocab_size + 1]
-loss   : supervised next-token CE, or mixed CE + logic loss during TT logic training
+loss   : supervised next-token CE, optionally plus alpha_logic * logic_loss
 ```
 
 Supervised loss:
@@ -66,7 +66,7 @@ value/aux slot   : value_weight
 Logic loss:
 
 ```text
-total_loss = (1 - alpha) * supervised_loss + alpha * logic_loss
+total_loss = supervised_loss + alpha_logic * logic_loss
 ```
 
 The TT logic loss samples differentiable token sequences from logits, maps token probabilities to DFA symbol probabilities, appends one END symbol, runs DeepDFA, and penalizes low satisfaction probability.

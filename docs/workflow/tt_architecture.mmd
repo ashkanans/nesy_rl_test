@@ -45,7 +45,7 @@ flowchart TD
     DeepDFA --> Accept["acceptance probability per sample"]
     Accept --> LogicLoss["logic_loss = -log(weighted expected acceptance)"]
 
-    SupLoss --> Total["total_loss<br/>(1-alpha)*supervised_loss + alpha*logic_loss"]
+    SupLoss --> Total["total_loss<br/>supervised_loss + alpha_logic*logic_loss"]
     LogicLoss --> Total
 
     Logits --> TrainOutput["Training output:<br/>logits + loss"]

@@ -23,13 +23,13 @@ Given a finite set $\Sigma$ of atomic propositions, the set of \ltlf formulas $\
 %\end{equation}
 where $a \in \Sigma$. We use $\top$ and $\bot$ to denote $True$ and $False$, respectively. $X$ (Strong Next) and $U$ (Until) are temporal operators. Other temporal operators are $N$ (Weak Next) and $R$ (Release), defined as $N \varphi \equiv \neg X\neg\varphi$ and $\varphi_1 R \varphi_2 \equiv \neg(\neg\varphi_1 U \neg\varphi_2 )$; $G$ (globally) $G\varphi \equiv \bot R\varphi$; and $F$ (eventually) $F \varphi \equiv \top U \varphi$.
 
-A trace $\boldsymbol{\sigma} = (\sigma_{1}, \sigma_{2}, \dots, \sigma_{T})$ is a sequence of propositional assignments to the propositions in $\Sigma$, where $\sigma_{t} \in 2^\Sigma$ is the set of all and only propositions that are true at instant $t$. Additionally, $|\boldsymbol{\sigma}| = T$ denotes the length of the trace. Since every trace is finite, $|\boldsymbol{\sigma}| < \infty$.
+A trace $\boldsymbol{\sigma} = (\sigma_{1}, \sigma_{2}, \dots, \sigma_{T})$ is a sequence of propositional assignments to the propositions in $\Sigma$, where $\sigma_{t} \in 2^\Sigma$ is the set of all and only propositions that are true at instant $t$. Additionally, $|\boldsymbol{\sigma}|$ denotes the length of the trace. Since every trace is finite, $|\boldsymbol{\sigma}| < \infty$; $\epsilon$ denotes the empty trace.
 Note that, if the propositional symbols in $\Sigma$ are all \textit{mutually exclusive}, i.e., the domain produces exactly one symbol true at each step, then we have $\sigma_{t} \in \Sigma$.
 %
 Let $last = |\boldsymbol{\sigma}| - 1$. We inductively define when
 an \ltlf formula $\varphi$ is true at an instant $i$ (for $0 \leq i \leq last$), written $\boldsymbol{\sigma},i \models \varphi$, as follows:
 \begin{itemize}
-    \item $\boldsymbol{\sigma}, i \models a$ iff $a \in \boldsymbol{\sigma}_i$, for $a \in \Sigma$;
+    \item $\boldsymbol{\sigma}, i \models a$ iff $a \in \sigma_i$, for $a \in \Sigma$;
     \item $\boldsymbol{\sigma}, i \models \neg \varphi$ iff $\boldsymbol{\sigma}, i \not\models \varphi$;
     \item $\boldsymbol{\sigma}, i \models \varphi_1 \land \varphi_2$ iff $\boldsymbol{\sigma}, i \models \varphi_1$ and $\boldsymbol{\sigma}, i \models \varphi_2$;
     \item $\boldsymbol{\sigma}, i \models X\varphi$ iff $i < last$ and  $\boldsymbol{\sigma}, i + 1 \models \varphi$;
@@ -37,7 +37,7 @@ an \ltlf formula $\varphi$ is true at an instant $i$ (for $0 \leq i \leq last$),
 \end{itemize}
 %
 \noindent
-We say that $\boldsymbol{\sigma}$ satisfies $\phi$, written $\boldsymbol{\sigma} \models \varphi$, if $\boldsymbol{\sigma}, 0 \models \varphi$. A formula $\varphi$ is satisfiable if it is true wrt some trace $\boldsymbol{\sigma}$, and is valid, if it is true wrt every trace $\boldsymbol{\sigma}$.
+We say that $\boldsymbol{\sigma}$ satisfies $\varphi$, written $\boldsymbol{\sigma} \models \varphi$, if $\boldsymbol{\sigma}, 0 \models \varphi$. A formula $\varphi$ is satisfiable if it is true wrt some trace $\boldsymbol{\sigma}$, and is valid, if it is true wrt every trace $\boldsymbol{\sigma}$.
 
 Any \ltlf formula $\varphi$ can be translated into a Deterministic Finite Automaton (DFA) \cite{LTLf} $A_\varphi = (2^\Sigma, Q, q_0, \delta, F)$, where $2^\Sigma$ is the automaton alphabet, $Q$ is the finite set of states, $q_0 \in Q$ is the initial state, $\delta: Q \times 2^\Sigma \rightarrow Q$ is the transition function, and $F \subseteq Q$ is the set of final states. 
 Additionally, we recursively define the extended transition function over traces $\delta^*: Q \times (2^\Sigma)^* \rightarrow Q$ as:
@@ -46,7 +46,7 @@ Additionally, we recursively define the extended transition function over traces
 %\[
 \begin{array}{l}
     \delta^*(q,\epsilon) = q \\
-    \delta^*(q, \sigma+\boldsymbol{x}) = \delta^*(\delta(q,\sigma) , \boldsymbol{x}),
+    \delta^*(q, \sigma \cdot \boldsymbol{x}) = \delta^*(\delta(q,\sigma) , \boldsymbol{x}),
 \end{array}
 %\]
 \end{equation}
@@ -61,7 +61,7 @@ We have that $\varphi$ and $A_\varphi$ are equivalent because, for any trace $\b
 
 \subsection{Offline Reinforcement Learning}
 
-In Reinforcement Learning (RL), the interaction between an agent and the environment is commonly modeled as a Markov Decision Process (MDP) \cite{sutton1998reinforcement}, defined by the tuple $(S,A,t,r,\gamma)$ where $S$ is the set of states, $A$ the set of actions, $t : S \times A \times S \rightarrow [0,1]$ the transition function, $r : S \times A \rightarrow R$ the reward function, and $\gamma \in [0,1]$ the discount factor. A policy $\pi : S \rightarrow A$ maps states to actions, while the value function $V^\pi(s)$ denotes the expected discounted return obtained by following $\pi$ from state $s$. The goal of the RL agent is to learn the optimal policy $\pi^*$ that provides the maximum value. 
+In Reinforcement Learning (RL), the interaction between an agent and the environment is commonly modeled as a Markov Decision Process \cite{sutton1998reinforcement}, defined by the tuple $(S,A,t,r,\gamma)$ where $S$ is the set of states, $A$ the set of actions, $t : S \times A \times S \rightarrow [0,1]$ the transition function s.t. $\sum_{s' \in S} t(s,a,s') = 1$, $r : S \times A \rightarrow R$ the reward function, and $\gamma \in [0,1]$ the discount factor. A policy $\pi : S \rightarrow A$ maps states to actions; the value function $V^\pi(s)$ denotes the expected discounted return obtained by following $\pi$ from $s$. The goal of the agent is to learn the optimal policy $\pi^*$ maximizing expected discounted return. 
 
 \begin{comment}
 Standard MDPs assume
