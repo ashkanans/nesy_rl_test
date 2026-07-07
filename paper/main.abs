@@ -1,0 +1,9 @@
+In this work we study offline reinforcement learning (RL) under temporally extended task constraints expressed in Linear Temporal Logic over finite traces (\ltlf). Recently, transformer-based approaches such as Trajectory Transformers and Decision Transformers have been adopted to address RL as a sequence modeling problem.
+%, enabling effective policy learning from fixed datasets.
+However, these methods optimize purely for reward and do not account for high-level temporal requirements.
+%
+Here, we introduce a neurosymbolic framework that injects \ltlf background knowledge into such transformer-based RL policies.
+Our approach compiles \ltlf formulas into deterministic finite automata (DFAs) and integrates them into the learning process through a differentiable representation and a logic-based loss function.
+In particular, we derive differentiable satisfaction signals from DFA progression and use them as a regularization term during training. The resulting method is architecture-agnostic across different models.
+%
+We evaluate the proposed framework on navigation environments with specification suites covering combinations of safety and reachability temporal properties. Experimental results show that incorporating background knowledge not only improves constraint satisfaction, but also maintains competitive return compared to vanilla baselines.

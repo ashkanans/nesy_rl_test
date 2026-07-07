@@ -2,14 +2,15 @@
 \subsection*{Experiments on Decision Transformers}
 Here, we report the preliminary results obtained by DTs. 
 %The goal of these experiments is to assess the effectiveness of logic regularization on both safety and task performance. 
-All the experiments are repeated three times with different random seeds; the small standard deviation is due to the deterministic gridworld dynamics.
+The DT product-value experiments are aggregated over three independent random seeds.
 
 
 \paragraph{Invariant Safety.}
 We report Decision Transformer (DT) alpha-sweep results with greedy decoding.
-For the invariant safety specification $G(\neg bomb)$, low-to-mid regularization strengths ($\alpha \leq 0.4$) do not improve behavior over vanilla DT: the agent still hits bombs and never reaches the goal.
-At higher regularization, both $\alpha=0.6$ and $\alpha=0.8$ achieve full safety satisfaction and zero bomb-hit rate.
-However, $\alpha=0.6$ is overly conservative (goal rate $=0$), while $\alpha=0.8$ preserves safety and also reaches the goal, yielding the strongest return.
+For the invariant safety specification $G(\neg bomb)$, vanilla DT consistently reaches bomb states and obtains zero satisfaction.
+All logic-regularized settings remove bomb hits and satisfy the safety formula.
+% However, several settings become overly conservative and fail to reach a goal within the episode horizon.
+Using satisfaction as the primary criterion and return as a tie-breaker, the best configuration is $\alpha=0.4$.
 
 \begin{figure}[!th]
 \centering
@@ -20,9 +21,10 @@ However, $\alpha=0.6$ is overly conservative (goal rate $=0$), while $\alpha=0.8
 
 \paragraph{Reach-while-Safe.}
 For the conjunctive specification $G(\neg bomb) \land F(goal)$, the setting is harder because safety and goal achievement must hold together.
-As in the invariant case, $\alpha \leq 0.4$ does not change the baseline failure mode.
-At $\alpha=0.6$, DT removes bomb hits but still fails to satisfy the full formula due to zero goal-reaching.
-Only $\alpha=0.8$ jointly achieves safety and goal attainment, giving the best satisfaction and return. These results are consistent with the findings in the invariant security case.
+Vanilla DT again fails the specification by reaching bomb states and never reaching a goal.
+Intermediate values of $\alpha$ show unstable behavior across seeds: some configurations avoid bombs but time out, while others reach the goal safely.
+For $\alpha \geq 0.6$, the model satisfies the full reach-while-safe specification in both seeds.
+The best configuration under the same satisfaction-then-return criterion is $\alpha=0.9$.
 
 \begin{figure}[!th]
 \centering
@@ -53,8 +55,10 @@ Figure \ref{fig:cb_dt_metrics_bar_example} reports the full per-metric bar summa
 \end{comment}
 
 \paragraph{Quantitative Summary.}
-Table~\ref{tab:cb_dt_key_results} highlights a sharp transition in DT behavior under logic regularization.
-While vanilla DT completely fails—yielding zero satisfaction and always hitting bomb states—high logical regularization ($\alpha=0.8$) improves significantly the behavior of the model. In this setting, the policy simultaneously achieves perfect satisfaction, zero bomb-hit rate, and consistent goal reaching across both specifications, leading to a substantial improvement in return. 
+Table~\ref{tab:cb_dt_key_results} summarizes the vanilla baseline and the best logic-regularized configuration for each specification.
+Logic regularization eliminates bomb hits for both objectives.
+For the safety-only formula, the selected configuration satisfies the safety constraint but reaches the goal in only one of the seeds.
+For the reach-while-safe formula, $\alpha=0.9$ achieves perfect satisfaction, zero bomb-hit rate, and consistent goal reaching, substantially improving return over vanilla DT.
 
 \begin{table}[!th]
 \centering
@@ -62,11 +66,11 @@ While vanilla DT completely fails—yielding zero satisfaction and always hittin
 \toprule
 Spec & Setting & Satisfaction & Goal & Bomb Hit & Return \\
 \midrule
-\texttt{safety} & vanilla ($\alpha=0$) & 0.000 & 0.000 & 1.000 & -1.460 \\
-\texttt{safety} & logic ($\alpha=0.8$) & \textbf{1.000} & \textbf{1.000} & \textbf{0.000} & \textbf{-0.780} \\
+\texttt{safety} & vanilla ($\alpha=0$) & 0.000 & 0.000 & 1.000 & \textbf{-1.345} \\
+\texttt{safety} & logic ($\alpha=0.4$) & \textbf{1.000} & \textbf{0.500} & \textbf{0.000} & -1.435 \\
 \midrule
-\texttt{reach-while-safe} & vanilla ($\alpha=0$) & 0.000 & 0.000 & 1.000 & -1.460 \\
-\texttt{reach-while-safe} & logic ($\alpha=0.8$) & \textbf{1.000} & \textbf{1.000} & \textbf{0.000} & \textbf{-0.780} \\
+\texttt{reach-while-safe} & vanilla ($\alpha=0$) & 0.000 & 0.000 & 1.000 & -1.345 \\
+\texttt{reach-while-safe} & logic ($\alpha=0.9$) & \textbf{1.000} & \textbf{1.000} & \textbf{0.000} & \textbf{0.870} \\
 \bottomrule
 \end{tabular}
 \caption{Decision Transformer key results.}
@@ -145,5 +149,3 @@ Spec & Setting & Satisfaction & Goal & Bomb Hit & Return \\
 \caption{Trajectory Transformer key results.}
 \label{tab:cb_key_results}
 \end{table}
-
-
