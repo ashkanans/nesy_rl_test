@@ -44,6 +44,7 @@ class WorkerConfig:
     extra_args: list[str]
     beam_width: int
     epochs: int
+    dataset_artifact_dir: str | None
 
 
 SUMMARY_FIELDS = [
@@ -757,6 +758,7 @@ def main(argv: list[str] | None = None):
             extra_args=list(extra),
             beam_width=int(args.beam_width),
             epochs=int(args.epochs),
+            dataset_artifact_dir=None,
         )
         proc = mp.Process(target=_worker_loop, args=(wcfg, q_in, q_out, stop_event), daemon=False)
         proc.start()
