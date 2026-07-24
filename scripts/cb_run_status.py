@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize ColourBomb DT matrix runs for terminal/Semaphore output."""
+"""Summarize ColourBomb DT and TT matrix runs for terminal/Semaphore output."""
 
 from __future__ import annotations
 
@@ -66,9 +66,17 @@ def _active_processes() -> list[str]:
         )
     except OSError:
         return []
+    matrix_markers = (
+        "cb_dt_matrix.py",
+        "train_dt.py",
+        "eval_dt.py",
+        "cb_tt_matrix.py",
+        "run_baselines.py",
+        "evaluate.py",
+    )
     lines = []
     for line in result.stdout.splitlines():
-        if "cb_dt_matrix.py" in line or "train_dt.py" in line or "eval_dt.py" in line:
+        if any(marker in line for marker in matrix_markers):
             if "cb_run_status.py" not in line:
                 lines.append(line.strip())
     return lines
@@ -76,11 +84,12 @@ def _active_processes() -> list[str]:
 
 def _main_log_for_run(run_dir: Path) -> Path | None:
     suffix = run_dir.name
-    candidates = sorted(Path("logs").glob(f"*{suffix.replace('dt_', 'cb_dt_')}*.log"))
+    named = suffix.replace("dt_", "cb_dt_").replace("tt_", "cb_tt_")
+    candidates = sorted(Path("logs").glob(f"*{named}*.log"))
     if candidates:
         return candidates[-1]
-    # Fallback: pick recent CB logs near the run creation time if exact naming differs.
-    logs = sorted(Path("logs").glob("cb_dt*.log"), key=lambda p: p.stat().st_mtime if p.exists() else 0)
+    # Fallback: pick recent CB logs (DT or TT) near the run creation time if exact naming differs.
+    logs = sorted(Path("logs").glob("cb_[dt]t*.log"), key=lambda p: p.stat().st_mtime if p.exists() else 0)
     return logs[-1] if logs else None
 
 
@@ -233,8 +242,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--root-glob",
-        default="runs/cb/dt_*",
-        help="Glob for matrix run directories, relative to the current repo root.",
+        default="runs/cb/[dt]t_*",
+        help="Glob for matrix run directories (DT and TT), relative to the current repo root.",
     )
     parser.add_argument("--limit", type=int, default=5, help="Number of newest runs to show.")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
