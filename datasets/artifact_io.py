@@ -11,6 +11,7 @@ from torch.utils.data import Dataset
 
 from envs.colour_bomb import CBConfig, ColourBombGridworldV1Env
 from envs.frozenlake_env import FrozenLakeConfig, FrozenLakeEnv
+from envs.ltlgrid_env import LTLGridConfig, LTLGridEnv
 from envs.nrm_nav_env import NRMSafetyNavConfig, NRMSafetyNavEnv
 from logic.token_schema import (
     build_end_row,
@@ -191,6 +192,17 @@ def _build_nrm_nav_env(dataset_config: dict) -> NRMSafetyNavEnv:
         obstacle_punish=bool(dataset_config.get("obstacle_punish", True)),
     )
     return NRMSafetyNavEnv(cfg)
+
+
+def _build_ltlgrid_env(dataset_config: dict) -> LTLGridEnv:
+    cfg = LTLGridConfig(
+        size=int(dataset_config.get("ltlgrid_size", 4)),
+        max_steps=int(dataset_config.get("ltlgrid_max_steps", 50)),
+        task_id=dataset_config.get("ltlgrid_task_id", None),
+        reward_type=str(dataset_config.get("ltlgrid_reward_type", "distance")),
+        reward_scale=float(dataset_config.get("ltlgrid_reward_scale", 0.01)),
+    )
+    return LTLGridEnv(cfg)
 
 
 def _build_dsrl_replay_env(
@@ -462,6 +474,8 @@ def load_sequence_dataset_artifact(
         env = _build_frozenlake_env(dataset_config)
     elif env_name == "nrm_nav":
         env = _build_nrm_nav_env(dataset_config)
+    elif env_name == "ltlgrid":
+        env = _build_ltlgrid_env(dataset_config)
     elif env_name == "dsrl":
         env = _build_dsrl_replay_env(episodes_tokens, episode_rewards, dataset_config)
     else:

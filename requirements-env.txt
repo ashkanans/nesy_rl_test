@@ -6,3 +6,4 @@ gymnasium==1.2.2
 h5py==3.11.0
 matplotlib==3.10.8
 scikit-video==1.1.11
+flloat==0.3.0

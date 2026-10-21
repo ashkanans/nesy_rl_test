@@ -63,7 +63,7 @@ def get_arg_parser(add_help=True):
     p.add_argument(
         "--env",
         type=str,
-        choices=["cb", "frozenlake", "dsrl", "antmaze"],
+        choices=["cb", "frozenlake", "dsrl", "antmaze", "ltlgrid"],
         default="frozenlake",
     )
     p.add_argument("--seed", type=int, default=0)
@@ -82,7 +82,7 @@ def get_arg_parser(add_help=True):
     p.add_argument(
         "--dt_logic_loss_type",
         type=str,
-        choices=["auto", "hazard", "dfa", "dfa_product_value"],
+        choices=["auto", "hazard", "dfa", "dfa_product_value", "ltlgrid_symbol"],
         default="auto",
         help=(
             "DT logic loss: hazard keeps the legacy unsafe-state penalty; "
@@ -176,6 +176,61 @@ def get_arg_parser(add_help=True):
     p.add_argument("--frozenlake_is_slippery", action="store_true")
     p.add_argument("--policy_mix", type=float, default=0.0)
     p.add_argument("--dsrl_dataset_path", type=str, default=None)
+    p.add_argument(
+        "--ltlgrid_h5_path",
+        type=str,
+        default=None,
+        help="H5 dataset from Neurosymbolic-DT-eval (Results/Symbolic/.../dataset_medium_expert.h5).",
+    )
+    p.add_argument(
+        "--ltlgrid_task_id",
+        type=int,
+        default=None,
+        help="0-based LTLf task (0-9); default: read from a 'task<N>' component of the H5 path.",
+    )
+    p.add_argument("--ltlgrid_reward_type", type=str, choices=["distance", "three_value"], default=None)
+    p.add_argument(
+        "--ltlgrid_reward_scale",
+        type=float,
+        default=0.01,
+        help="Rewards (and thus RTG) are multiplied by this; 0.01 matches the original DT's /100.",
+    )
+    p.add_argument(
+        "--ltlgrid_grounder",
+        type=str,
+        choices=["oracle", "supervised", "weak"],
+        default="supervised",
+        help="How (state, action) is mapped to grid symbols for the ltlgrid_symbol logic loss.",
+    )
+    p.add_argument("--ltlgrid_grounder_epochs", type=int, default=300)
+    p.add_argument(
+        "--ltlgrid_logic_target",
+        type=str,
+        choices=["potential", "accept"],
+        default="potential",
+        help="potential: 1 - expected DFA potential (dense); accept: -log P(accepting) after the rollout.",
+    )
+    p.add_argument(
+        "--ltlgrid_keep_post_terminal",
+        action="store_true",
+        help="Keep steps taken after the DFA reached its absorbing state (default: truncate them).",
+    )
+    p.add_argument(
+        "--ltlgrid_expert_only",
+        action="store_true",
+        help="Use only the noise-free optimal trajectories (first half of the H5 file).",
+    )
+    p.add_argument(
+        "--ltlgrid_num_starts",
+        type=int,
+        default=0,
+        help="Train only on trajectories from this many randomly chosen start cells (0 = all 12).",
+    )
+    p.add_argument(
+        "--ltlgrid_limit_episodes",
+        action="store_true",
+        help="Use a random subset of --num_episodes trajectories (drawn with --seed) of the H5 file.",
+    )
     p.add_argument("--dsrl_dataset_key", type=str, default="PointGoal1")
     p.add_argument("--dsrl_state_bins", type=int, default=128)
     p.add_argument("--dsrl_action_bins", type=int, default=16)
@@ -244,6 +299,12 @@ def _has_formula_source(args) -> bool:
 
 def _resolve_dt_logic_loss_type(args) -> str:
     requested = str(getattr(args, "dt_logic_loss_type", "auto"))
+    if args.env == "ltlgrid":
+        if requested not in {"auto", "ltlgrid_symbol"}:
+            raise ValueError("--env ltlgrid supports only --dt_logic_loss_type ltlgrid_symbol (or auto).")
+        return "ltlgrid_symbol"
+    if requested == "ltlgrid_symbol":
+        raise ValueError("--dt_logic_loss_type ltlgrid_symbol is only available for --env ltlgrid.")
     if requested == "auto":
         return "dfa" if _has_formula_source(args) else "hazard"
     if requested in {"dfa", "dfa_product_value"} and not _has_formula_source(args):
@@ -320,11 +381,34 @@ def train(args):
     product_value_table = None
     product_value_path = None
     dfa_state_ids = None
+    ltlgrid_logic = None
+    ltlgrid_grounder_stats = None
     if float(args.logic_alpha) > 0.0:
         dt_logic_loss_type_effective = _resolve_dt_logic_loss_type(args)
         if dt_logic_loss_type_effective == "hazard":
             hazard = hazard_mask_for_env(args.env, base_dataset.env)
             hazard_mask_t = torch.from_numpy(hazard).float().to(device)
+        elif dt_logic_loss_type_effective == "ltlgrid_symbol":
+            from planning.ltlgrid_logic import LTLGridSymbolLogic, train_grounder
+
+            grounder, ltlgrid_grounder_stats = train_grounder(
+                base_dataset,
+                mode=args.ltlgrid_grounder,
+                epochs=args.ltlgrid_grounder_epochs,
+                seed=args.seed,
+                device=device,
+            )
+            for p_ in grounder.parameters():
+                p_.requires_grad_(False)  # the grounder is fixed while the DT trains
+            ltlgrid_logic = LTLGridSymbolLogic(
+                base_dataset.env,
+                grounder,
+                reward_scale=base_dataset.reward_scale,
+                device=device,
+                target=args.ltlgrid_logic_target,
+            )
+            print(f"ltlgrid grounder ({args.ltlgrid_grounder}): {ltlgrid_grounder_stats}")
+            dfa_state_ids = base_dataset.dfa_state_ids
         elif dt_logic_loss_type_effective in {"dfa", "dfa_product_value"}:
             from train_cb import build_adapter_and_dfa, resolve_formulas
 
@@ -337,7 +421,9 @@ def train(args):
         else:
             raise ValueError(f"Unsupported DT logic loss type '{dt_logic_loss_type_effective}'")
 
-        if args.dt_logic_dynamics_backend == "tabular_env":
+        if dt_logic_loss_type_effective == "ltlgrid_symbol":
+            pass  # exact grid dynamics live inside LTLGridSymbolLogic
+        elif args.dt_logic_dynamics_backend == "tabular_env":
             dyn = build_tabular_dynamics(base_dataset)
             transition_probs_t = torch.from_numpy(dyn).float().to(device)
             dynamics_stats = {"backend": "tabular_env", "pure_offline": False}
@@ -634,6 +720,17 @@ def train(args):
                 )
                 if not torch.isfinite(logic_loss):
                     logic_loss = logits.new_zeros(())
+            elif dt_logic_loss_type_effective == "ltlgrid_symbol" and ltlgrid_logic is not None:
+                logic_loss = ltlgrid_logic.loss(
+                    logits=logits,
+                    states=states,
+                    dfa_state_ids=dfa_state_ids_t,
+                    attention_mask=mask,
+                    horizon=int(args.logic_rollout_horizon),
+                    temperature=float(args.logic_temperature),
+                )
+                if not torch.isfinite(logic_loss):
+                    logic_loss = logits.new_zeros(())
             elif (
                 dt_logic_loss_type_effective == "dfa_product_value"
                 and transition_probs_t is not None
@@ -750,6 +847,8 @@ def train(args):
     }
     if dynamics_model_path is not None:
         summary["dynamics_checkpoint_path"] = dynamics_model_path
+    if ltlgrid_grounder_stats is not None:
+        summary["ltlgrid_grounder"] = ltlgrid_grounder_stats
 
     if not args.no_eval_after_train:
         rollout_cfg = DTRolloutConfig(

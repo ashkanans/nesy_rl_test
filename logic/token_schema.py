@@ -81,6 +81,18 @@ SCHEMA_REGISTRY: Dict[str, TokenSchemaDefinition] = {
             TokenField("safety_cost", 3, "Binary safety cost token.", 2),
         ),
     ),
+    "ltlgrid_v1": TokenSchemaDefinition(
+        schema_id="ltlgrid_v1",
+        env_name="ltlgrid",
+        width=4,
+        dtype="int64",
+        fields=(
+            TokenField("state", 0, "Discrete grid cell token (x * size + y)."),
+            TokenField("action", 1, "Discrete action token (0=down,1=right,2=up,3=left)."),
+            TokenField("reward", 2, "Reward-token slot (currently placeholder=0).", 1),
+            TokenField("aux", 3, "Auxiliary slot (currently placeholder=0).", 1),
+        ),
+    ),
     "dsrl_v1": TokenSchemaDefinition(
         schema_id="dsrl_v1",
         env_name="dsrl",
@@ -100,6 +112,7 @@ ENV_TO_SCHEMA_ID = {
     "nrm_nav": "nrm_nav_v1",
     "frozenlake": "frozenlake_v1",
     "antmaze": "antmaze_v1",
+    "ltlgrid": "ltlgrid_v1",
     "dsrl": "dsrl_v1",
 }
 

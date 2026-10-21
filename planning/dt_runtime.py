@@ -16,6 +16,7 @@ from datasets.artifact_io import load_sequence_dataset_artifact, save_sequence_d
 from datasets.dsrl_dataset import DSRLSequenceDataset
 from datasets.dt_dataset import DTSequenceDataset
 from datasets.frozenlake_dataset import FrozenLakeSequenceDataset
+from datasets.ltlgrid_dataset import LTLGridSequenceDataset
 from planning.eval_runtime import write_json
 
 
@@ -180,6 +181,31 @@ def build_dt_offline_source(args):
             target_shift="token",
             download=getattr(args, "dsrl_download", False),
         )
+        return dataset, None
+    if args.env == "ltlgrid":
+        h5_path = getattr(args, "ltlgrid_h5_path", None)
+        if not h5_path:
+            raise ValueError("--env ltlgrid requires --ltlgrid_h5_path (or --dataset_artifact_path).")
+        dataset = LTLGridSequenceDataset(
+            h5_path=h5_path,
+            sequence_length=max(8, args.context_len * 4),
+            target_shift=getattr(args, "target_shift", "token"),
+            max_episodes=args.num_episodes if getattr(args, "ltlgrid_limit_episodes", False) else None,
+            reward_scale=getattr(args, "ltlgrid_reward_scale", 0.01),
+            task_id=getattr(args, "ltlgrid_task_id", None),
+            reward_type=getattr(args, "ltlgrid_reward_type", None),
+            truncate_after_terminal=not getattr(args, "ltlgrid_keep_post_terminal", False),
+            subsample_seed=(
+                args.seed
+                if getattr(args, "ltlgrid_limit_episodes", False) or getattr(args, "ltlgrid_num_starts", 0)
+                else None
+            ),
+            num_starts=getattr(args, "ltlgrid_num_starts", 0) or None,
+            expert_only=bool(getattr(args, "ltlgrid_expert_only", False)),
+        )
+        # record what was resolved so saved dataset artifacts can rebuild the env
+        args.ltlgrid_task_id = dataset.task_id
+        args.ltlgrid_reward_type = dataset.reward_type
         return dataset, None
     if args.env == "antmaze":
         reason = (
@@ -586,6 +612,8 @@ def _is_hazard_terminal(env_name: str, terminal_type: str | None) -> bool:
     if env_name == "nrm_nav":
         return terminal_type == "X"
     if env_name == "dsrl":
+        return terminal_type == "X"
+    if env_name == "ltlgrid":
         return terminal_type == "X"
     return False
 
@@ -1028,6 +1056,13 @@ def evaluate_dt_policy(
                     hit_hazard = True
                 cost_token = 1 if float(info.get("cost", 0.0)) > 0.0 else 0
                 reward_token = 1 if (bool(info.get("goal", False)) or float(reward) > 0.0) else 0
+            elif env_name == "ltlgrid":
+                # "G": DFA reached the accepting absorbing state; "X": the failing one
+                if terminal_type == "G":
+                    hit_goal = True
+                if terminal_type == "X":
+                    hit_hazard = True
+                cost_token = 0
             else:
                 cost_token = 0
 
