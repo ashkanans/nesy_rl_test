@@ -9,7 +9,7 @@ Examples:
   python scripts/ltlgrid_train_all.py --data_dir /path/to/data --out_dir runs/ltlgrid_dt
   python scripts/ltlgrid_train_all.py --data_dir ... --out_dir ... --tasks 1 7 --rewards distance \
       --datasets medium_expert --epochs 3 --eval_episodes 24            # quick check
-  python scripts/ltlgrid_train_all.py ... --logic_alpha 1.0 --grounder supervised   # with logic loss
+  python scripts/ltlgrid_train_all.py ... --logic_alpha 10 --grounder supervised   # with logic loss (horizon 6)
 """
 
 import argparse
@@ -43,6 +43,7 @@ def main(argv=None):
     p.add_argument("--eval_episodes", type=int, default=120, help="rollouts per run (12 start cells x 10)")
     p.add_argument("--logic_alpha", type=float, default=0.0, help="weight of the DFA logic loss (0 = off)")
     p.add_argument("--grounder", choices=["oracle", "supervised", "weak"], default="supervised")
+    p.add_argument("--logic_rollout_horizon", type=int, default=6, help="imagined steps of the logic loss")
     args = p.parse_args(argv)
 
     out = Path(args.out_dir)
@@ -67,6 +68,7 @@ def main(argv=None):
             "--run_dir", str(run_dir), "--base_runs_dir", str(out / "_tmp"),
             "--no-save_generated_dataset",
             "--logic_alpha", str(args.logic_alpha), "--ltlgrid_grounder", args.grounder,
+            "--logic_rollout_horizon", str(args.logic_rollout_horizon),
         ])
         t0 = time.time()
         print(f"[{i}/{len(jobs)}] {name}", flush=True)
