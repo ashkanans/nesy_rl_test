@@ -2,20 +2,23 @@
 Train (and evaluate by rollouts) the Decision Transformer on Susanna's symbolic LTL-grid datasets.
 
 Expects the unzipped Dataset_Symbolic.zip: <data_dir>/Dataset/Symbolic/<distance|three_value>/task<N>/
-dataset_<medium_expert|medium|medium_replay>.h5. One run per (reward, task, dataset, seed); finished runs
-are skipped, so an interrupted batch can simply be restarted. Results go to <out_dir>/results.csv.
+dataset_<medium_expert|medium|medium_replay>.h5. One run per (reward, task, dataset, seed, alpha); finished
+runs are skipped, so an interrupted batch can simply be restarted. Results go to <out_dir>/results.csv.
+
+The logic loss enters as (1 - alpha) * imitation + alpha * logic (--logic_weighting convex, alpha in [0, 1]);
+alpha = 0 is the no-logic baseline. --logic_weighting additive gives the older imitation + alpha * logic.
 
 Examples:
   python scripts/ltlgrid_train_all.py --data_dir /path/to/data --out_dir runs/ltlgrid_dt
   python scripts/ltlgrid_train_all.py --data_dir ... --out_dir ... --tasks 1 7 --rewards distance \
       --datasets medium_expert --epochs 3 --eval_episodes 24            # quick check
-  python scripts/ltlgrid_train_all.py ... --logic_alpha 10 --grounder supervised   # with logic loss (horizon 6)
+  python scripts/ltlgrid_train_all.py ... --logic_alphas 0 0.1 0.5 0.9 --seeds 0 1 2 3 4   # alpha sweep
+Figures of a sweep: python scripts/ltlgrid_alpha_figures.py --results <out_dir> ... --out_dir <figures>
 """
 
 import argparse
 import csv
 import json
-import os
 import sys
 import time
 import traceback
@@ -26,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.train_dt import get_arg_parser, train  # noqa: E402
 
 DATASETS = ["medium_expert", "medium", "medium_replay"]
-COLUMNS = ["reward", "task", "dataset", "seed", "success_rate", "failure_rate", "return_mean",
+COLUMNS = ["reward", "task", "dataset", "seed", "alpha", "success_rate", "failure_rate", "return_mean",
            "dataset_size", "final_imitation_loss", "final_logic_loss", "runtime_sec"]
 
 
@@ -41,10 +44,16 @@ def main(argv=None):
     p.add_argument("--epochs", type=int, default=30)
     p.add_argument("--context_len", type=int, default=50, help="50 = a whole episode")
     p.add_argument("--eval_episodes", type=int, default=120, help="rollouts per run (12 start cells x 10)")
-    p.add_argument("--logic_alpha", type=float, default=0.0, help="weight of the DFA logic loss (0 = off)")
+    p.add_argument("--logic_alphas", type=float, nargs="+", default=[0.0],
+                   help="weights of the DFA logic loss to run (0 = off, the baseline)")
+    p.add_argument("--logic_weighting", choices=["convex", "additive"], default="convex",
+                   help="convex: (1-alpha)*imitation + alpha*logic; additive: imitation + alpha*logic")
     p.add_argument("--grounder", choices=["oracle", "supervised", "weak"], default="supervised")
     p.add_argument("--logic_rollout_horizon", type=int, default=6, help="imagined steps of the logic loss")
     args = p.parse_args(argv)
+
+    if args.logic_weighting == "convex" and not all(0.0 <= a <= 1.0 for a in args.logic_alphas):
+        p.error("--logic_weighting convex needs every --logic_alphas value in [0, 1]")
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -52,11 +61,17 @@ def main(argv=None):
     if not results.exists():
         with open(results, "w", newline="") as f:
             csv.writer(f).writerow(COLUMNS)
+    else:
+        header = results.read_text().splitlines()[0].split(",")
+        if header != COLUMNS:
+            p.error(f"{results} has an older column layout; use a new --out_dir")
 
-    jobs = [(r, t, d, s) for r in args.rewards for t in args.tasks for d in args.datasets for s in args.seeds]
-    for i, (reward, task, dataset, seed) in enumerate(jobs, 1):
-        run_dir = out / reward / f"task{task}" / dataset / f"seed{seed}"
-        name = f"{reward}/task{task}/{dataset}/seed{seed}"
+    # alpha is the innermost loop, so the arms that are compared with each other finish together
+    jobs = [(r, t, d, s, a) for r in args.rewards for t in args.tasks for d in args.datasets
+            for s in args.seeds for a in args.logic_alphas]
+    for i, (reward, task, dataset, seed, alpha) in enumerate(jobs, 1):
+        name = f"{reward}/task{task}/{dataset}/seed{seed}/alpha{alpha:g}"
+        run_dir = out / f"alpha{alpha:g}" / reward / f"task{task}" / dataset / f"seed{seed}"
         if (run_dir / "metrics.json").exists():
             print(f"[{i}/{len(jobs)}] skip {name} (done)", flush=True)
             continue
@@ -67,7 +82,8 @@ def main(argv=None):
             "--eval_num_episodes", str(args.eval_episodes), "--seed", str(seed),
             "--run_dir", str(run_dir), "--base_runs_dir", str(out / "_tmp"),
             "--no-save_generated_dataset",
-            "--logic_alpha", str(args.logic_alpha), "--ltlgrid_grounder", args.grounder,
+            "--logic_alpha", str(alpha), "--logic_weighting", args.logic_weighting,
+            "--ltlgrid_grounder", args.grounder,
             "--logic_rollout_horizon", str(args.logic_rollout_horizon),
         ])
         t0 = time.time()
@@ -76,7 +92,7 @@ def main(argv=None):
             train(run_args)
             m = json.loads((run_dir / "metrics.json").read_text())
             s = json.loads((run_dir / "dt_summary.json").read_text())
-            row = [reward, task, dataset, seed, m["goal_rate"], m["hazard_hit_rate"], m["return_mean"],
+            row = [reward, task, dataset, seed, alpha, m["goal_rate"], m["hazard_hit_rate"], m["return_mean"],
                    m.get("dataset_size"), s["epoch_supervised_action_losses"][-1],
                    (s.get("epoch_logic_losses") or [0.0])[-1], round(time.time() - t0, 1)]
             with open(results, "a", newline="") as f:

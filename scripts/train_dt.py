@@ -80,6 +80,16 @@ def get_arg_parser(add_help=True):
     p.add_argument("--grad_clip", type=float, default=1.0)
     p.add_argument("--logic_alpha", type=float, default=0.0)
     p.add_argument(
+        "--logic_weighting",
+        type=str,
+        choices=["additive", "convex"],
+        default="additive",
+        help=(
+            "how --logic_alpha enters the loss: additive = sup + alpha * logic (alpha >= 0); "
+            "convex = (1 - alpha) * sup + alpha * logic (alpha in [0, 1])"
+        ),
+    )
+    p.add_argument(
         "--dt_logic_loss_type",
         type=str,
         choices=["auto", "hazard", "dfa", "dfa_product_value", "ltlgrid_symbol"],
@@ -383,6 +393,8 @@ def train(args):
     dfa_state_ids = None
     ltlgrid_logic = None
     ltlgrid_grounder_stats = None
+    if args.logic_weighting == "convex" and not 0.0 <= float(args.logic_alpha) <= 1.0:
+        raise ValueError(f"--logic_weighting convex needs --logic_alpha in [0, 1], got {args.logic_alpha}")
     if float(args.logic_alpha) > 0.0:
         dt_logic_loss_type_effective = _resolve_dt_logic_loss_type(args)
         if dt_logic_loss_type_effective == "hazard":
@@ -753,7 +765,10 @@ def train(args):
                 )
                 if not torch.isfinite(logic_loss):
                     logic_loss = logits.new_zeros(())
-            loss = sup_loss + float(args.logic_alpha) * logic_loss
+            if args.logic_weighting == "convex":
+                loss = (1.0 - float(args.logic_alpha)) * sup_loss + float(args.logic_alpha) * logic_loss
+            else:
+                loss = sup_loss + float(args.logic_alpha) * logic_loss
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -798,6 +813,7 @@ def train(args):
                 "num_actions": num_actions,
                 "rtg_target": rtg_target,
                 "logic_alpha": float(args.logic_alpha),
+                "logic_weighting": str(args.logic_weighting),
                 "dt_logic_loss_type": str(getattr(args, "dt_logic_loss_type", "auto")),
                 "dt_logic_loss_type_effective": str(dt_logic_loss_type_effective),
                 "logic_rollout_horizon": int(args.logic_rollout_horizon),
