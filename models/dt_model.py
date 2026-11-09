@@ -20,6 +20,7 @@ class DecisionTransformerDiscrete(nn.Module):
         n_head: int = 2,
         dropout: float = 0.1,
         max_timestep: int = 1024,
+        state_features: torch.Tensor | None = None,
     ):
         super().__init__()
         self.num_states = int(num_states)
@@ -27,7 +28,17 @@ class DecisionTransformerDiscrete(nn.Module):
         self.context_len = int(context_len)
         self.max_timestep = int(max_timestep)
 
-        self.state_emb = nn.Embedding(self.num_states, n_embd)
+        if state_features is None:
+            self.state_emb = nn.Embedding(self.num_states, n_embd)
+            self.state_features = None
+        else:
+            # One feature row per state token (e.g. the symbolic map of a layout and the agent cell of
+            # Grid7), encoded by a small MLP, so states that share a map share what the model learns.
+            feats = torch.as_tensor(state_features, dtype=torch.float32)
+            if feats.shape[0] != self.num_states:
+                raise ValueError(f"state_features has {feats.shape[0]} rows, expected num_states={self.num_states}.")
+            self.register_buffer("state_features", feats)
+            self.state_enc = nn.Sequential(nn.Linear(feats.shape[1], n_embd), nn.ReLU(), nn.Linear(n_embd, n_embd))
         self.prev_action_emb = nn.Embedding(self.num_actions + 1, n_embd)
         self.rtg_emb = nn.Linear(1, n_embd)
         self.time_emb = nn.Embedding(self.max_timestep, n_embd)
@@ -56,8 +67,9 @@ class DecisionTransformerDiscrete(nn.Module):
         attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         timesteps = timesteps.clamp(min=0, max=self.max_timestep - 1)
+        state_vec = self.state_emb(states) if self.state_features is None else self.state_enc(self.state_features[states])
         x = (
-            self.state_emb(states)
+            state_vec
             + self.prev_action_emb(prev_actions)
             + self.rtg_emb(rtg.unsqueeze(-1))
             + self.time_emb(timesteps)

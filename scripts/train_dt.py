@@ -200,6 +200,13 @@ def get_arg_parser(add_help=True):
     )
     p.add_argument("--ltlgrid_reward_type", type=str, choices=["distance", "three_value"], default=None)
     p.add_argument(
+        "--ltlgrid_grid",
+        type=int,
+        choices=[4, 7],
+        default=4,
+        help="4: fixed 4x4 grid. 7: 7x7 grid with per-game layouts (Grid7 'fixed50' H5 files).",
+    )
+    p.add_argument(
         "--ltlgrid_reward_scale",
         type=float,
         default=0.01,
@@ -402,6 +409,10 @@ def train(args):
             hazard_mask_t = torch.from_numpy(hazard).float().to(device)
         elif dt_logic_loss_type_effective == "ltlgrid_symbol":
             from planning.ltlgrid_logic import LTLGridSymbolLogic, train_grounder
+            from planning.ltlgrid7_logic import LTLGrid7SymbolLogic
+
+            if int(args.ltlgrid_grid) == 7:
+                LTLGridSymbolLogic = LTLGrid7SymbolLogic  # noqa: F811  (layout-aware loss, same interface)
 
             grounder, ltlgrid_grounder_stats = train_grounder(
                 base_dataset,
@@ -660,6 +671,7 @@ def train(args):
         n_head=args.n_head,
         dropout=args.dropout,
         max_timestep=max(512, args.max_steps + 1),
+        state_features=getattr(base_dataset, "state_features", None),  # Grid7: the map seen at each state token
     ).to(device)
     max_timestep = int(model.max_timestep)
 

@@ -52,6 +52,12 @@ def oracle_symbol_table(env) -> torch.Tensor:
     """Exact symbol table [S, A, Y] (one-hot)."""
     S, A = env.observation_space.n, env.action_space.n
     table = torch.zeros(S, A, NUM_SYMBOLS)
+    if hasattr(env, "layouts"):  # LTLGrid7Env: the state token carries the layout
+        for s in range(S):
+            layout, pos = env.state_to_layout_pos(s)
+            for a in range(A):
+                table[s, a, env.symbol_of_pos(layout, env.move(pos, a))] = 1.0
+        return table
     for s in range(S):
         pos = env.state_to_pos(s)
         for a in range(A):

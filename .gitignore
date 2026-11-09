@@ -94,3 +94,6 @@ paper/*.out
 paper/*.pdf
 paper/*.synctex.gz
 paper/*.toc
+
+# ltlgrid sweep outputs from the server
+ltlgrid_out/

@@ -16,6 +16,7 @@ from datasets.artifact_io import load_sequence_dataset_artifact, save_sequence_d
 from datasets.dsrl_dataset import DSRLSequenceDataset
 from datasets.dt_dataset import DTSequenceDataset
 from datasets.frozenlake_dataset import FrozenLakeSequenceDataset
+from datasets.ltlgrid7_dataset import LTLGrid7SequenceDataset
 from datasets.ltlgrid_dataset import LTLGridSequenceDataset
 from planning.eval_runtime import write_json
 
@@ -186,6 +187,23 @@ def build_dt_offline_source(args):
         h5_path = getattr(args, "ltlgrid_h5_path", None)
         if not h5_path:
             raise ValueError("--env ltlgrid requires --ltlgrid_h5_path (or --dataset_artifact_path).")
+        if int(getattr(args, "ltlgrid_grid", 4)) == 7:
+            # 7x7 grid: the layout is part of the state token; the matching test episodes are loaded too
+            dataset = LTLGrid7SequenceDataset(
+                h5_path=h5_path,
+                sequence_length=max(8, args.context_len * 4),
+                target_shift=getattr(args, "target_shift", "token"),
+                max_episodes=args.num_episodes if getattr(args, "ltlgrid_limit_episodes", False) else None,
+                reward_scale=getattr(args, "ltlgrid_reward_scale", 0.01),
+                task_id=getattr(args, "ltlgrid_task_id", None),
+                reward_type=getattr(args, "ltlgrid_reward_type", None),
+                subsample_seed=args.seed if getattr(args, "ltlgrid_limit_episodes", False) else None,
+                expert_only=bool(getattr(args, "ltlgrid_expert_only", False)),
+                max_steps=int(getattr(args, "max_steps", 100)),
+            )
+            args.ltlgrid_task_id = dataset.task_id
+            args.ltlgrid_reward_type = dataset.reward_type
+            return dataset, None
         dataset = LTLGridSequenceDataset(
             h5_path=h5_path,
             sequence_length=max(8, args.context_len * 4),
